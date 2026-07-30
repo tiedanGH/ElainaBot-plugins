@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>服务器上传</title>
+<style>
+:root{
+  --bg:#f5f5f7;--card:#fff;--card2:#fafafa;--text:#1d1d1f;--muted:#8e8e93;
+  --text2:#3c3c43;--border:rgba(60,60,67,.12);--border-strong:rgba(60,60,67,.22);
+  --accent:#09f;--accent-hover:#008ae6;--accent-soft:rgba(0,153,255,.08);
+  --ok:#34c759;--warn:#ff9500;--danger:#ff3b30;
+  --shadow:0 4px 16px rgba(31,35,41,.05);--shadow-sm:0 1px 2px rgba(0,0,0,.04),0 1px 3px rgba(0,0,0,.06)
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif}
+.wrap{width:100%;max-width:1240px;margin:0 auto;padding:36px 40px 56px}
+.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:24px}
+.hero h1{font-size:28px;font-weight:700;line-height:1.35;letter-spacing:-.02em;margin:0}
+.hero .sub{font-size:13.5px;color:var(--muted);line-height:1.6;margin-top:8px}
+.badge{padding:5px 10px;border:1px solid rgba(0,153,255,.18);border-radius:999px;color:var(--accent);font-size:11px;font-weight:700;background:var(--accent-soft);white-space:nowrap}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:18px}
+.stat{background:var(--card);border:1px solid transparent;border-radius:14px;padding:18px;display:flex;align-items:center;gap:12px;box-shadow:var(--shadow-sm);transition:border-color .18s,box-shadow .18s,transform .18s}
+.stat:hover{border-color:var(--border);box-shadow:var(--shadow);transform:translateY(-1px)}
+.stat .ic{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:var(--card2);border:1px solid var(--border);color:var(--text2);font-size:12px;font-weight:700}
+.stat .n{font-size:22px;font-weight:700;line-height:1.05}.stat .l{font-size:11.5px;color:var(--muted);margin-top:5px}
+.tabs{display:flex;gap:6px;margin-bottom:16px;overflow-x:auto}
+.tab{padding:8px 16px;border-radius:10px;border:1px solid transparent;background:transparent;color:var(--text2);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.tab:hover{background:rgba(0,0,0,.04)}.tab.on{background:var(--card);border-color:var(--border);box-shadow:var(--shadow-sm);color:var(--accent)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:22px;margin-bottom:18px;box-shadow:var(--shadow)}
+.card h3{font-size:15px;font-weight:700;margin:0 0 18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hint{font-size:11.5px;color:var(--muted);font-weight:400;line-height:1.5}
+.field{margin-bottom:14px}.field label{display:block;font-size:12.5px;font-weight:600;color:var(--text2);margin-bottom:7px}
+input,select,textarea{background:var(--card);border:1px solid var(--border-strong);color:var(--text);border-radius:9px;padding:10px 12px;outline:none;font:13px inherit;width:100%;transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea{resize:vertical;min-height:80px;line-height:1.65}
+.mono,.mono-ta{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.mono-ta{background:var(--card2);font-size:11.5px}
+.mono{font-size:11px;word-break:break-all}
+.row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}.row .field{flex:1;min-width:150px;margin-bottom:0}
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.btn{padding:9px 15px;border-radius:10px;border:1px solid var(--border-strong);background:var(--card);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;transition:background .15s,border-color .15s,color .15s,transform .15s}
+.btn:hover{background:var(--card2);border-color:var(--muted)}.btn:disabled{opacity:.45;cursor:not-allowed;pointer-events:none}.btn:active:not(:disabled){transform:translateY(1px)}
+.btn-accent{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-accent:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.btn-soft{background:transparent;border-color:transparent;color:var(--text2)}.btn-soft:hover{background:rgba(0,0,0,.05)}
+.btn-line{background:transparent;border-color:var(--accent);color:var(--accent)}.btn-line:hover{background:var(--accent-soft);border-color:var(--accent)}
+.btn-sm{padding:5px 10px;font-size:12px;border-radius:8px}
+.btn-link{border:0;background:none;color:var(--accent);cursor:pointer;padding:0;font:inherit;font-size:12px}
+.actions{display:flex;justify-content:flex-end;gap:9px;flex-wrap:wrap;margin-top:6px}
+.switch{display:flex;align-items:center;gap:9px;padding:11px 13px;border:1px solid var(--border);border-radius:11px;background:var(--card2);font-size:12.5px;font-weight:600;color:var(--text2);cursor:pointer}
+.switch input{width:auto;margin:0}
+.t-row{padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--card2);margin-bottom:10px}
+.t-row:last-child{margin-bottom:0}
+code{background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em}
+.tbl-wrap{overflow:auto;border:1px solid var(--border);border-radius:12px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+th{background:var(--card2);color:var(--muted);font-size:11px;font-weight:600;white-space:nowrap;position:sticky;top:0}
+tr:last-child td{border-bottom:0}tbody tr:hover{background:var(--card2)}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
+.pill.ok{background:rgba(52,199,89,.12);color:#1f8f3d}
+.pill.no{background:rgba(255,59,48,.1);color:#c02a20}
+.pill.man{background:rgba(255,149,0,.12);color:#b26a00}
+.pill.gray{background:rgba(60,60,67,.08);color:var(--text2)}
+.empty{text-align:center;color:var(--muted);padding:32px 16px;font-size:12px}
+.result{display:none;margin-top:12px;padding:12px 14px;border-radius:10px;font-size:12px;line-height:1.7}
+.result.show{display:block}
+.result.ok{background:var(--accent-soft);border:1px solid rgba(0,153,255,.18);color:var(--text2)}
+.result.err{background:rgba(255,59,48,.06);border:1px solid rgba(255,59,48,.2);color:#bb2c24}
+.mask{position:fixed;inset:0;background:rgba(0,0,0,.36);display:none;z-index:40;padding:32px 16px;overflow:auto}
+.mask.show{display:block}
+.modal{background:var(--card);border-radius:18px;max-width:900px;margin:0 auto;padding:22px;box-shadow:0 18px 48px rgba(0,0,0,.2)}
+.modal-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}
+.modal-head h3{margin:0;font-size:16px}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:6px 12px;font-size:12px;margin-bottom:16px}
+.kv dt{color:var(--muted)}.kv dd{margin:0;word-break:break-all}
+pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:11.5px;line-height:1.65;max-height:52vh;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:0}
+#toast{position:fixed;left:50%;bottom:30px;transform:translate(-50%,8px);opacity:0;pointer-events:none;z-index:60;background:rgba(0,0,0,.82);color:#fff;padding:10px 18px;border-radius:10px;font-size:12px;transition:.2s}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+.spin{width:13px;height:13px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;opacity:.72;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+@media(max-width:820px){.wrap{padding:24px 16px 40px}.stats{grid-template-columns:repeat(2,1fr);gap:10px}.grid2,.grid4{grid-template-columns:1fr}.hero{flex-direction:column;align-items:flex-start}.card{padding:18px}.kv{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div>
+      <h1>服务器上传</h1>
+      <div class="sub">群成员引用群文件消息执行 <code>/server &lt;目标&gt; [文件夹名]</code>，自动内容审核后落地到服务器目录；结论与未通过分类回群，完整审核回复只留档在插件数据目录。</div>
+    </div>
+    <div class="badge" id="state-badge">加载中…</div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="ic">总</div><div><div class="n" id="st-total">-</div><div class="l">审核记录</div></div></div>
+    <div class="stat"><div class="ic">过</div><div><div class="n" id="st-pass">-</div><div class="l">已部署</div></div></div>
+    <div class="stat"><div class="ic">拒</div><div><div class="n" id="st-reject">-</div><div class="l">未通过</div></div></div>
+    <div class="stat"><div class="ic">人</div><div><div class="n" id="st-manual">-</div><div class="l">需人工处理</div></div></div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-tab="cfg" onclick="switchTab('cfg')">配置</button>
+    <button class="tab" data-tab="rec" onclick="switchTab('rec')">审核记录</button>
+    <button class="tab" data-tab="file" onclick="switchTab('file')">数据文件</button>
+  </div>
+
+  <!-- ==================== 配置 ==================== -->
+  <div id="tab-cfg">
+    <div class="card">
+      <h3>生效范围 <span class="hint">指令所有人可执行，但只在下列群生效；一行一个 openid</span></h3>
+      <div class="grid2">
+        <div class="field">
+          <label>允许的群 openid</label>
+          <textarea id="allowed_groups" class="mono-ta" placeholder="每行一个群 openid"></textarea>
+        </div>
+        <div class="field">
+          <label>部署人员 openid（每次完成后在群内 @ 通知）</label>
+          <textarea id="notify_users" class="mono-ta" placeholder="每行一个用户 openid"></textarea>
+        </div>
+      </div>
+      <div class="grid2" style="margin-bottom:0">
+        <label class="switch"><input type="checkbox" id="enabled"> 启用插件</label>
+        <label class="switch"><input type="checkbox" id="keep_replaced_backup"> 替换前备份旧内容到 data/backups</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>上传目标 <span class="hint">每一行就是一个子指令 <code>/server &lt;子指令&gt;</code>，加一行即多一个上传目标，无需改代码</span>
+        <span style="margin-left:auto"><button class="btn btn-sm btn-line" onclick="addTarget()">+ 添加目标</button></span>
+      </h3>
+      <div id="target-rows"></div>
+      <div class="hint" style="margin-top:10px">
+        子指令名不区分大小写，不能含空格 / <code>/</code> / <code>\</code> 等路径字符，也不能叫 <code>help</code>；别名用空格或逗号分隔。<br>
+        路径需为服务器上已存在的绝对路径。用法：<code>/server &lt;子指令&gt;</code> 引用压缩包 → 解压到该路径下的同名文件夹；
+        <code>/server &lt;子指令&gt; &lt;文件夹名&gt;</code> 引用单文件 → 写入该路径下已存在的这个文件夹。
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>审核接口 <span class="hint">OpenAI 兼容接口；密钥留空则沿用 settings.yaml 的 ai.api_key / 环境变量</span></h3>
+      <div class="row">
+        <div class="field" style="flex:2">
+          <label>接口地址 base_url</label>
+          <input id="base_url" class="mono" placeholder="https://api.example.com/v1">
+        </div>
+        <div class="field" style="flex:2">
+          <label>密钥 api_key <span class="hint" id="key-state"></span></label>
+          <input id="api_key" type="password" placeholder="留空表示不修改">
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <div class="field" style="flex:2">
+          <label>模型 <button class="btn-link" onclick="loadModels()">获取模型列表</button></label>
+          <input id="model" class="mono" list="model-list" placeholder="gpt-4.1-nano">
+          <datalist id="model-list"></datalist>
+        </div>
+        <div class="field" style="max-width:120px"><label>温度</label><input id="temperature" type="number" min="0" max="2" step="0.1"></div>
+        <div class="field" style="max-width:130px"><label>超时(秒)</label><input id="request_timeout" type="number" min="30" max="600" step="10"></div>
+        <button class="btn btn-line" id="btn-test" onclick="testConn()">测试连接</button>
+      </div>
+      <div class="grid2" style="margin-top:14px">
+        <label class="switch"><input type="checkbox" id="review_enabled"> 启用内容审核（关闭后直接部署，仅供上游故障应急）</label>
+        <label class="switch"><input type="checkbox" id="keep_archive"> 留档原压缩包到 data/archives</label>
+      </div>
+      <div class="field" style="margin-top:14px;margin-bottom:0">
+        <label>补充审核要求（追加到内置审核标准之后，可留空）</label>
+        <textarea id="review_prompt" placeholder="例如：额外检查是否包含外链地址…"></textarea>
+      </div>
+      <div id="test-result" class="result"></div>
+    </div>
+
+    <div class="card">
+      <h3>限额 <span class="hint">上传者是普通群成员，压缩包按不可信输入处理</span></h3>
+      <div class="grid4">
+        <div class="field"><label>压缩包上限(MB)</label><input id="max_archive_mb" type="number" min="1" max="2048"></div>
+        <div class="field"><label>解压后上限(MB)</label><input id="max_uncompressed_mb" type="number" min="1" max="8192"></div>
+        <div class="field"><label>文件数上限</label><input id="max_files" type="number" min="1" max="100000"></div>
+        <div class="field"><label>下载超时(秒)</label><input id="download_timeout" type="number" min="5" max="600"></div>
+        <div class="field"><label>送审文本预算(字符)</label><input id="text_budget" type="number" min="0" max="1000000" step="1000"></div>
+        <div class="field"><label>送审图片张数（0=不送图）</label><input id="review_images" type="number" min="0" max="20"></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-soft" onclick="loadConfig()">重新读取</button>
+        <button class="btn btn-accent" id="btn-save" onclick="saveConfig()">保存配置</button>
+      </div>
+      <div id="save-result" class="result"></div>
+    </div>
+  </div>
+
+  <!-- ==================== 审核记录 ==================== -->
+  <div id="tab-rec" style="display:none">
+    <div class="card">
+      <h3>审核记录 <span class="hint">群内只输出结论与未通过分类；完整审核回复见「查看」</span>
+        <span style="margin-left:auto;display:flex;gap:8px">
+          <button class="btn btn-sm" onclick="loadRecords()">刷新</button>
+          <button class="btn btn-sm btn-soft" onclick="clearRecords()">清空记录索引</button>
+        </span>
+      </h3>
+      <div id="rec-table"></div>
+    </div>
+  </div>
+
+  <!-- ==================== 数据文件 ==================== -->
+  <div id="tab-file" style="display:none">
+    <div class="card">
+      <h3>插件数据文件 <span class="hint" id="data-dir"></span>
+        <span style="margin-left:auto"><button class="btn btn-sm" onclick="loadFiles()">刷新</button></span>
+      </h3>
+      <div id="file-table"></div>
+    </div>
+  </div>
+</div>
+
+<div class="mask" id="modal-mask" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">详情</h3>
+      <button class="btn btn-sm btn-soft" onclick="closeModal()">关闭</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const TOKEN=new URLSearchParams(location.search).get('token')||'';
+const baseMatch=location.pathname.match(/^(.*)\/api\/web-pages\//);
+const API=(baseMatch?baseMatch[1]:'')+'/api/ext/svrupload';
+
+const BOOLS=['enabled','keep_replaced_backup','review_enabled','keep_archive'];
+const NUMS=['temperature','request_timeout','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget','review_images'];
+const TEXTS=['base_url','model','review_prompt'];
+const LISTS=['allowed_groups','notify_users'];
+const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',review:'审核',deploy:'部署失败',deployed:'已上传',error:'异常',cancelled:'已取消'};
+
+let CFG={},LABELS={},RECORDS=[],TARGETS=[];
+
+function $(id){return document.getElementById(id)}
+function esc(v){return String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function toast(m){const el=$('toast');el.textContent=m;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2200)}
+function setBusy(btn,busy,text){btn.disabled=busy;btn.innerHTML=busy?'<span class="spin"></span>处理中…':text}
+function show(el,ok,html){el.className='result show '+(ok?'ok':'err');el.innerHTML=html}
+function fmtSize(n){n=Number(n||0);return n>=1048576?(n/1048576).toFixed(2)+' MB':n>=1024?(n/1024).toFixed(1)+' KB':n+' B'}
+function fmtTime(ts){if(!ts)return '-';const d=new Date(ts*1000);const p=v=>String(v).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`}
+
+async function api(path,method='GET',body){
+  const suffix=method==='GET'?(path.includes('?')?'&':'?')+'token='+encodeURIComponent(TOKEN):'';
+  try{
+    const r=await fetch(API+path+suffix,{method,headers:{'Content-Type':'application/json','Authorization':'Bearer '+TOKEN},body:body?JSON.stringify(body):undefined});
+    return await r.json();
+  }catch(e){
+    return {success:false,error:'请求失败: '+(e&&e.message||e)};
+  }
+}
+
+function switchTab(name){
+  ['cfg','rec','file'].forEach(t=>{$('tab-'+t).style.display=t===name?'':'none'});
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
+  if(name==='rec')loadRecords();
+  if(name==='file')loadFiles();
+}
+
+/* ==================== 配置 ==================== */
+function renderTargets(){
+  if(!TARGETS.length){
+    $('target-rows').innerHTML='<div class="empty">还没有上传目标，点「+ 添加目标」新增一个子指令</div>';
+    return;
+  }
+  $('target-rows').innerHTML=TARGETS.map((t,i)=>`<div class="row t-row">
+    <div class="field" style="max-width:150px;min-width:110px"><label>子指令名</label>
+      <input class="mono" value="${esc(t.key)}" oninput="editTarget(${i},'key',this.value)" placeholder="lgtbot"></div>
+    <div class="field" style="max-width:160px;min-width:110px"><label>别名</label>
+      <input class="mono" value="${esc((t.aliases||[]).join(' '))}" oninput="editTarget(${i},'aliases',this.value)" placeholder="lgt"></div>
+    <div class="field" style="flex:2;min-width:200px"><label>服务器路径（绝对）</label>
+      <input class="mono" value="${esc(t.path)}" oninput="editTarget(${i},'path',this.value)" placeholder="/srv/lgtbot/games"></div>
+    <div class="field" style="flex:1;min-width:150px"><label>帮助说明</label>
+      <input value="${esc(t.desc)}" oninput="editTarget(${i},'desc',this.value)" placeholder="上传群文件至 lgtbot"></div>
+    <button class="btn btn-soft" onclick="delTarget(${i})" title="删除该目标">删除</button>
+  </div>`).join('');
+}
+function editTarget(i,field,value){
+  if(!TARGETS[i])return;
+  TARGETS[i][field]=field==='aliases'?value.split(/[\s,，/|]+/).filter(Boolean):value;
+}
+function addTarget(){TARGETS.push({key:'',aliases:[],path:'',desc:''});renderTargets()}
+function delTarget(i){TARGETS.splice(i,1);renderTargets()}
+
+function renderConfig(){
+  BOOLS.forEach(k=>$(k).checked=!!CFG[k]);
+  NUMS.concat(TEXTS).forEach(k=>{if($(k))$(k).value=CFG[k]??''});
+  LISTS.forEach(k=>$(k).value=(CFG[k]||[]).join('\n'));
+  TARGETS=JSON.parse(JSON.stringify(CFG.targets||[]));renderTargets();
+  $('api_key').value='';
+  const src=CFG.api_key_source;
+  $('key-state').textContent=src==='plugin'?'（已在本插件配置）':src==='inherit'?'（继承框架 ai 配置）':'（未配置）';
+  const usable=(CFG.targets||[]).filter(t=>t.path).length;
+  const ready=CFG.enabled&&CFG.api_key_set&&(CFG.allowed_groups||[]).length&&usable;
+  $('state-badge').textContent=ready?`配置就绪 · ${usable} 个目标`:'配置未完成';
+  $('state-badge').style.color=ready?'':'var(--warn)';
+}
+async function loadConfig(){
+  const r=await api('/config');
+  if(!r.success)return toast(r.error||'读取配置失败');
+  CFG=r.config||{};renderConfig();
+}
+function collect(){
+  const body={};
+  BOOLS.forEach(k=>body[k]=$(k).checked);
+  NUMS.forEach(k=>body[k]=Number($(k).value||0));
+  TEXTS.forEach(k=>body[k]=$(k).value.trim());
+  LISTS.forEach(k=>body[k]=$(k).value.split(/[\s,，]+/).map(s=>s.trim()).filter(Boolean));
+  body.targets=TARGETS.map(t=>({key:(t.key||'').trim(),aliases:t.aliases||[],
+                                path:(t.path||'').trim(),desc:(t.desc||'').trim()}))
+                      .filter(t=>t.key);
+  const key=$('api_key').value.trim();
+  if(key)body.api_key=key;
+  return body;
+}
+async function saveConfig(){
+  const btn=$('btn-save');setBusy(btn,true);
+  const body=collect();
+  const r=await api('/config','POST',body);
+  setBusy(btn,false,'保存配置');
+  if(!r.success)return show($('save-result'),false,'保存失败: '+esc(r.error||''));
+  CFG=r.config||{};renderConfig();
+  const kept=(CFG.targets||[]).length,sent=body.targets.length;
+  let msg='✅ 配置已保存并立即生效';
+  if(kept<sent)msg+=`<br>⚠️ 有 ${sent-kept} 个目标被忽略：子指令名重复、为空、含空格或路径字符、或叫 help`;
+  const noPath=(CFG.targets||[]).filter(t=>!t.path).map(t=>t.key);
+  if(noPath.length)msg+=`<br>⚠️ 未填路径的目标暂不可用：${esc(noPath.join('、'))}`;
+  show($('save-result'),true,msg+`<br>当前可用子指令：${esc((CFG.targets||[]).filter(t=>t.path).map(t=>'/server '+t.key).join('、'))||'无'}`);
+}
+async function loadModels(){
+  const r=await api('/models?base_url='+encodeURIComponent($('base_url').value.trim()));
+  if(!r.success)return toast(r.error||'获取失败');
+  $('model-list').innerHTML=(r.models||[]).map(m=>`<option value="${esc(m)}"></option>`).join('');
+  toast('已获取 '+(r.models||[]).length+' 个模型');
+}
+async function testConn(){
+  const btn=$('btn-test');setBusy(btn,true);
+  const r=await api('/test','POST',{});
+  setBusy(btn,false,'测试连接');
+  show($('test-result'),r.success,r.success
+    ?`✅ 接口可用，模型 <code>${esc(r.model||'')}</code>，返回：${esc(r.reply||'')}`
+    :'❌ 接口不可用: '+esc(r.error||''));
+}
+
+/* ==================== 审核记录 ==================== */
+function verdictPill(rec){
+  if(rec.stage==='deployed')return '<span class="pill ok">已部署</span>';
+  if(rec.manual)return '<span class="pill man">需人工</span>';
+  if(rec.verdict==='reject')return '<span class="pill no">未通过</span>';
+  if(rec.verdict==='skip')return '<span class="pill gray">未审核</span>';
+  return `<span class="pill man">${esc(STAGE_LABEL[rec.stage]||rec.stage||'-')}</span>`;
+}
+function catText(rec){
+  const cats=rec.categories||[];
+  if(!cats.length)return rec.error?esc(String(rec.error).slice(0,60)):'-';
+  return cats.map(c=>esc(LABELS[c]||c)).join('、');
+}
+async function loadRecords(){
+  const r=await api('/records');
+  if(!r.success)return toast('读取记录失败');
+  RECORDS=r.records||[];LABELS=r.labels||{};
+  const s=r.stats||{};
+  $('st-total').textContent=s.total??0;$('st-pass').textContent=s.passed??0;
+  $('st-reject').textContent=s.rejected??0;$('st-manual').textContent=s.manual??0;
+  if(!RECORDS.length){$('rec-table').innerHTML='<div class="empty">暂无审核记录</div>';return}
+  const rows=RECORDS.map(rec=>`<tr>
+    <td class="mono">${esc(rec.time||'')}</td>
+    <td>${esc(rec.filename||'')}<div class="hint">${fmtSize(rec.size)} · ${rec.file_count||0} 文件</div></td>
+    <td class="mono">${esc(rec.target||'-')}${rec.folder?'/'+esc(rec.folder):''}
+      <div class="hint">${rec.mode==='file'?'单文件':'压缩包'}</div></td>
+    <td class="mono">${esc((rec.user_id||'').slice(0,10))}…</td>
+    <td>${verdictPill(rec)}</td>
+    <td>${catText(rec)}</td>
+    <td class="mono">${esc(rec.deploy_name||'-')}</td>
+    <td class="mono">${esc(String(rec.elapsed??'-'))}s</td>
+    <td><button class="btn btn-sm" onclick="openRecord('${esc(rec.id)}')">查看</button></td>
+  </tr>`).join('');
+  $('rec-table').innerHTML=`<div class="tbl-wrap"><table><thead><tr>
+    <th>时间</th><th>文件</th><th>目标</th><th>提交者</th><th>结果</th><th>未通过分类 / 原因</th><th>落地名称</th><th>耗时</th><th></th>
+  </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+async function openRecord(id){
+  const r=await api('/record?id='+encodeURIComponent(id));
+  if(!r.success)return toast(r.error||'读取失败');
+  const rec=r.record||{};
+  const kv=[
+    ['记录号',rec.id],['时间',rec.time],['群 openid',rec.group_id],
+    ['提交者',(rec.username||'')+' '+(rec.user_id||'')],['文件',rec.filename],
+    ['上传模式',rec.mode==='file'?'单文件增量':'压缩包'],
+    ['目标子指令',rec.target||'-'],['目标路径',rec.target_path||'-'],
+    ['目标文件夹',rec.folder||'（压缩包同名文件夹）'],
+    ['文件大小',fmtSize(rec.size)],['解压后大小',fmtSize(rec.total_size)],
+    ['包内文件数',rec.file_count??'-'],['rule 文件',(rec.rule_files||[]).join('、')||'未发现'],
+    ['取文件来源',rec.source==='quote'?'引用消息':'指令附件'],
+    ['阶段',STAGE_LABEL[rec.stage]||rec.stage],['结论',rec.verdict||'-'],
+    ['未通过分类',(rec.categories||[]).map(c=>LABELS[c]||c).join('、')||'-'],
+    ['需人工处理',rec.manual?'是':'否'],['模型',rec.model||'-'],['耗时',(rec.elapsed??'-')+'s'],
+    ['落地路径',rec.dest||'-'],['旧内容备份',rec.backup||'-'],
+    ['压缩包留档',rec.archive_file||'-'],['审核留档',rec.review_file||'-'],
+    ['错误',rec.error||'无'],
+  ].map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+  $('modal-title').textContent='审核详情 '+id;
+  $('modal-body').innerHTML=`<dl class="kv">${kv}</dl>
+    <div class="hint" style="margin-bottom:8px">以下为审核服务的完整回复（群内不输出，仅留档于 data/reviews/）</div>
+    <pre class="raw">${esc(r.review_text||'(无留档)')}</pre>`;
+  $('modal-mask').classList.add('show');
+}
+async function clearRecords(){
+  if(!confirm('清空审核记录索引？reviews/ archives/ 里的留档文件会保留，可在「数据文件」页单独删除。'))return;
+  const r=await api('/records/clear','POST',{});
+  toast(r.success?`已清空 ${r.cleared} 条记录`:'清空失败');
+  loadRecords();
+}
+
+/* ==================== 数据文件 ==================== */
+async function loadFiles(){
+  const r=await api('/files');
+  if(!r.success)return toast('读取失败');
+  $('data-dir').textContent=r.data_dir||'';
+  const files=r.files||[];
+  if(!files.length){$('file-table').innerHTML='<div class="empty">数据目录为空</div>';return}
+  const rows=files.map(f=>`<tr>
+    <td class="mono">${esc(f.path)}</td>
+    <td class="mono">${fmtSize(f.size)}</td>
+    <td class="mono">${fmtTime(f.mtime)}</td>
+    <td style="white-space:nowrap">
+      ${f.viewable?`<button class="btn btn-sm" onclick="viewFile('${esc(f.path)}')">查看</button>`:'<span class="hint">不可预览</span>'}
+      <button class="btn btn-sm btn-soft" onclick="delFile('${esc(f.path)}')">删除</button>
+    </td>
+  </tr>`).join('');
+  $('file-table').innerHTML=`<div class="tbl-wrap"><table><thead><tr>
+    <th>相对路径</th><th>大小</th><th>修改时间</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+async function viewFile(path){
+  const r=await api('/file?path='+encodeURIComponent(path));
+  if(!r.success)return toast(r.error||'读取失败');
+  $('modal-title').textContent=path;
+  $('modal-body').innerHTML=`<pre class="raw">${esc(r.content||'(空文件)')}</pre>`;
+  $('modal-mask').classList.add('show');
+}
+async function delFile(path){
+  if(!confirm('删除 '+path+' ？'))return;
+  const r=await api('/file/delete','POST',{path});
+  toast(r.success?'已删除':(r.error||'删除失败'));
+  loadFiles();
+}
+function closeModal(){$('modal-mask').classList.remove('show')}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
+
+loadConfig();loadRecords();
+</script>
+</body>
+</html>
