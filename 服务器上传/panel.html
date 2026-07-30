@@ -168,6 +168,11 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
         <label>补充审核要求（追加到内置审核标准之后，可留空）</label>
         <textarea id="review_prompt" placeholder="例如：额外检查是否包含外链地址…"></textarea>
       </div>
+      <div class="hint" style="margin-top:10px">
+        内置审核标准按上传模式裁剪：<b>压缩包</b>（完整游戏包）查 原作出处标注 + 内容合规 + 版权；
+        <b>单文件</b>（增量替换）只查 内容合规 + 版权 —— 单文件不是完整游戏、通常不含 rule.md，
+        不会因「缺少出处标注」被拒。
+      </div>
       <div id="test-result" class="result"></div>
     </div>
 
@@ -392,6 +397,7 @@ async function openRecord(id){
     ['记录号',rec.id],['时间',rec.time],['群 openid',rec.group_id],
     ['提交者',(rec.username||'')+' '+(rec.user_id||'')],['文件',rec.filename],
     ['上传模式',rec.mode==='file'?'单文件增量':'压缩包'],
+    ['审查标准',(rec.criteria||[]).map(c=>LABELS[c]||c).join('、')||'-'],
     ['目标子指令',rec.target||'-'],['目标路径',rec.target_path||'-'],
     ['目标文件夹',rec.folder||'（压缩包同名文件夹）'],
     ['文件大小',fmtSize(rec.size)],['解压后大小',fmtSize(rec.total_size)],

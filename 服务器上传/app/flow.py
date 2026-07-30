@@ -58,8 +58,8 @@ def usage() -> str:
         '',
         '🔸上传需引用一条群文件消息',
         '🔸压缩包: 不带文件夹名, 解压至目标路径下的同名文件夹, 存在重名文件夹时直接替换',
-        '🔸单文件: 需指定目标路径下已存在的文件夹名, 存在重名文件时直接替换',
         '🔸压缩包支持 zip / tar.gz / tar.bz2 / tar.xz; 内容需含 rule.md 并注明游戏原型出处',
+        '🔸单文件: 需指定目标路径下已存在的文件夹名, 存在重名文件时直接替换',
     ]
     return '\n'.join(lines)
 
@@ -205,6 +205,7 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str):
         'review_file': '',
         'archive_file': '',
         'model': '',
+        'criteria': [],
         'elapsed': 0.0,
         '_started': time.time(),
     }
@@ -301,7 +302,8 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
             'mode': record['mode'], 'target': target['key'], 'folder': folder}
     result = await review.review(pkg, meta, cfg)
     record.update(stage='review', verdict=result['verdict'], categories=result['categories'],
-                  manual=result['manual'], model=result['model'], error=result['error'])
+                  manual=result['manual'], model=result['model'], error=result['error'],
+                  criteria=result.get('criteria') or [])
     record['review_file'] = store.save_review_text(
         rid, result['raw'] or f'(无回复内容) 错误: {result["error"]}',
         header=_review_header(record, result))
@@ -331,6 +333,7 @@ def _review_header(record: dict, result: dict | None = None) -> str:
     ]
     if result:
         lines += [
+            f'- 审查标准: {review.labels(result.get("criteria") or [])}',
             f'- 模型: {result["model"]}',
             f'- 结论: {result["verdict"]}',
             f'- 分类: {", ".join(result["categories"]) or "无"}',
