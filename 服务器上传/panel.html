@@ -95,7 +95,7 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
 
   <div class="stats">
     <div class="stat"><div class="ic">总</div><div><div class="n" id="st-total">-</div><div class="l">审核记录</div></div></div>
-    <div class="stat"><div class="ic">过</div><div><div class="n" id="st-pass">-</div><div class="l">已部署</div></div></div>
+    <div class="stat"><div class="ic">过</div><div><div class="n" id="st-pass">-</div><div class="l" id="st-pass-label">已上传</div></div></div>
     <div class="stat"><div class="ic">拒</div><div><div class="n" id="st-reject">-</div><div class="l">未通过</div></div></div>
     <div class="stat"><div class="ic">人</div><div><div class="n" id="st-manual">-</div><div class="l">需人工处理</div></div></div>
   </div>
@@ -171,7 +171,9 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
       <div class="hint" style="margin-top:10px">
         内置审核标准按上传模式裁剪：<b>压缩包</b>（完整游戏包）查 原作出处标注 + 内容合规 + 版权；
         <b>单文件</b>（增量替换）只查 内容合规 + 版权 —— 单文件不是完整游戏、通常不含 rule.md，
-        不会因「缺少出处标注」被拒。
+        不会因「缺少出处标注」被拒。<br>
+        主人可用 <code>/server force &lt;目标&gt; [文件夹名]</code>（别名 <code>f</code> / <code>强制</code>）跳过内容审核直传；
+        压缩包成员名校验、体积限额、落地路径越界校验仍然照做，记录里会标记「强制」。
       </div>
       <div id="test-result" class="result"></div>
     </div>
@@ -354,11 +356,12 @@ async function testConn(){
 
 /* ==================== 审核记录 ==================== */
 function verdictPill(rec){
-  if(rec.stage==='deployed')return '<span class="pill ok">已部署</span>';
-  if(rec.manual)return '<span class="pill man">需人工</span>';
+  const forced=rec.forced?' <span class="pill man">强制</span>':'';
+  if(rec.stage==='deployed')return '<span class="pill ok">已上传</span>'+forced;
+  if(rec.manual)return '<span class="pill man">需人工</span>'+forced;
   if(rec.verdict==='reject')return '<span class="pill no">未通过</span>';
   if(rec.verdict==='skip')return '<span class="pill gray">未审核</span>';
-  return `<span class="pill man">${esc(STAGE_LABEL[rec.stage]||rec.stage||'-')}</span>`;
+  return `<span class="pill man">${esc(STAGE_LABEL[rec.stage]||rec.stage||'-')}</span>`+forced;
 }
 function catText(rec){
   const cats=rec.categories||[];
@@ -372,6 +375,7 @@ async function loadRecords(){
   const s=r.stats||{};
   $('st-total').textContent=s.total??0;$('st-pass').textContent=s.passed??0;
   $('st-reject').textContent=s.rejected??0;$('st-manual').textContent=s.manual??0;
+  $('st-pass-label').textContent=s.forced?`已上传（含强制 ${s.forced}）`:'已上传';
   if(!RECORDS.length){$('rec-table').innerHTML='<div class="empty">暂无审核记录</div>';return}
   const rows=RECORDS.map(rec=>`<tr>
     <td class="mono">${esc(rec.time||'')}</td>
@@ -396,7 +400,7 @@ async function openRecord(id){
   const kv=[
     ['记录号',rec.id],['时间',rec.time],['群 openid',rec.group_id],
     ['提交者',(rec.username||'')+' '+(rec.user_id||'')],['文件',rec.filename],
-    ['上传模式',rec.mode==='file'?'单文件增量':'压缩包'],
+    ['上传模式',(rec.mode==='file'?'单文件增量':'压缩包')+(rec.forced?'（主人强制上传，跳过审核）':'')],
     ['审查标准',(rec.criteria||[]).map(c=>LABELS[c]||c).join('、')||'-'],
     ['目标子指令',rec.target||'-'],['目标路径',rec.target_path||'-'],
     ['目标文件夹',rec.folder||'（压缩包同名文件夹）'],

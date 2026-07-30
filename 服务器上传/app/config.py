@@ -84,8 +84,8 @@ _INT_FIELDS = ('review_images', 'request_timeout', 'max_archive_mb', 'max_uncomp
 _BOOL_FIELDS = ('enabled', 'keep_replaced_backup', 'keep_archive', 'review_enabled')
 _LIST_FIELDS = ('allowed_groups', 'notify_users')
 
-# 保留字: 不能当子指令名 (会挡住帮助)
-RESERVED_KEYS = ('help', '帮助', 'list', '列表')
+# 保留字: 不能当子指令名 (会挡住帮助与强制上传)
+RESERVED_KEYS = ('help', '帮助', 'list', '列表', 'force', 'f', '强制')
 _KEY_BAD = re.compile(r'[\s/\\:*?"<>|]')
 
 

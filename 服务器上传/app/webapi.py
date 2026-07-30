@@ -92,6 +92,7 @@ async def _get_records(request: web.Request):
     stats = {
         'total': len(records),
         'passed': sum(1 for r in records if r.get('stage') == 'deployed'),
+        'forced': sum(1 for r in records if r.get('forced')),
         'rejected': sum(1 for r in records if r.get('verdict') == 'reject'),
         'manual': sum(1 for r in records if r.get('manual') or r.get('stage') in ('error', 'download', 'extract', 'deploy')),
     }

@@ -1,12 +1,17 @@
 """指令解析 + 上传流程编排: 取引用文件 → 下载 → 解压/校验 → 审核 → 部署 → 记录 → @通知。
 
 指令形态 (子指令来自配置, 不硬编码):
-    /server help                 查看帮助与全部可用目标
-    /server <目标>               引用压缩包消息 → 解压到 <目标路径>/<压缩包名>/
-    /server <目标> <文件夹名>     引用单文件消息 → 写入 <目标路径>/<文件夹名>/<文件名>
+    /server help                       查看帮助与全部可用目标
+    /server <目标>                     引用压缩包消息 → 解压到 <目标路径>/<压缩包名>/
+    /server <目标> <文件夹名>           引用单文件消息 → 写入 <目标路径>/<文件夹名>/<文件名>
+    /server force <目标> [文件夹名]     仅主人: 跳过内容审核直传服务器
 
 「目标」是面板里配置的一行 (key + 别名 + 服务器路径), 面板加一行就多一个子指令,
-不需要改代码。同名目录 / 同名文件一律直接替换 (无 force 参数)。
+不需要改代码。同名目录 / 同名文件一律直接替换。
+
+force (别名 f / 强制) 只跳过**内容审核**: 压缩包的成员名校验、体积/数量限额、
+落地路径越界校验一律照做 —— 那些是服务器完整性的底线, 与审不审内容无关。
+主人权限由框架的 owner_only 判定 (见 main.py), flow 这边只按 force 标记走流程。
 
 设计要点:
   · 指令**所有人可执行**, 但只在 config.allowed_groups 列出的群里生效;
@@ -58,8 +63,8 @@ def usage() -> str:
         '',
         '🔸上传需引用一条群文件消息',
         '🔸压缩包: 不带文件夹名, 解压至目标路径下的同名文件夹, 存在重名文件夹时直接替换',
-        '🔸压缩包支持 zip / tar.gz / tar.bz2 / tar.xz; 内容需含 rule.md 并注明游戏原型出处',
         '🔸单文件: 需指定目标路径下已存在的文件夹名, 存在重名文件时直接替换',
+        '🔸压缩包支持 zip / tar.gz / tar.bz2 / tar.xz; 内容需含 rule.md 并注明游戏原型出处',
     ]
     return '\n'.join(lines)
 
@@ -86,17 +91,25 @@ def _mentions(cfg: dict) -> str:
 
 # ==================== 主入口 ====================
 
-async def handle(event, argline: str) -> bool:
+async def handle(event, argline: str, force: bool = False) -> bool:
     """指令入口: 解析 ``/server`` 参数 + 校验后把耗时流程丢到后台任务。
 
-    ``argline`` 是 ``/server`` 之后的原始参数串。
+    ``argline`` 是目标与文件夹名部分 (已剥掉 force 关键字)。``force=True`` 表示
+    这次由主人发起、跳过内容审核 —— 该权限已由 main.py 的 owner_only 把关。
     返回 True 表示已受理 (后台在跑), False 表示未受理。
+
+    普通调用在「插件关闭」「群不在白名单」时**静默返回**, 避免把提示刷到无关群;
+    force 调用一定来自主人, 这两种情况改为明确回一句, 免得主人对着没反应的指令排查。
     """
     cfg = config.all_config(refresh=True)
     if not cfg.get('enabled'):
+        if force:
+            await _send(event, '❌ 插件已在后台面板关闭, 请先启用')
         return False
     if not config.is_group_allowed(event.group_id):
         log.info(f'群 {event.group_id} 不在允许列表, 忽略 /server 指令')
+        if force:
+            await _send(event, '❌ 当前群不在允许列表, 请先在后台面板「生效范围」添加本群')
         return False
 
     args = (argline or '').split()
@@ -105,7 +118,8 @@ async def handle(event, argline: str) -> bool:
         await _send(event, usage())
         return False
     if len(args) > 2:
-        await _send(event, '❌ 参数过多\n用法: /server <目标> [文件夹名]\n发送 /server help 查看帮助')
+        prefix = '/server force' if force else '/server'
+        await _send(event, f'❌ 参数过多\n用法: {prefix} <目标> [文件夹名]\n发送 /server help 查看帮助')
         return False
 
     target = config.find_target(args[0])
@@ -153,7 +167,7 @@ async def handle(event, argline: str) -> bool:
         return False
     _busy = True
     try:
-        _spawn(_run(event, cfg, ref, target, folder))
+        _spawn(_run(event, cfg, ref, target, folder, force))
     except Exception:
         _busy = False
         raise
@@ -179,10 +193,11 @@ def cancel_all():
 
 # ==================== 流程 ====================
 
-async def _run(event, cfg: dict, ref: dict, target: dict, folder: str):
+async def _run(event, cfg: dict, ref: dict, target: dict, folder: str, force: bool = False):
     global _busy
     rid = store.new_record_id()
     record = {
+        'forced': force,
         'id': rid,
         'time': time.strftime('%Y-%m-%d %H:%M:%S'),
         'group_id': event.group_id or '',
@@ -210,7 +225,7 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str):
         '_started': time.time(),
     }
     try:
-        await _pipeline(event, cfg, ref, record, target, folder)
+        await _pipeline(event, cfg, ref, record, target, folder, force)
     except asyncio.CancelledError:
         record.update(stage='cancelled', error='任务被取消 (插件卸载或重载)')
         _persist(record)
@@ -233,7 +248,8 @@ def _persist(record: dict):
     store.add_record(data)
 
 
-async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, folder: str):
+async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, folder: str,
+                    force: bool = False):
     rid = record['id']
     fname = record['filename']
     single = bool(folder)
@@ -290,13 +306,16 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
     record['file_count'] = len(pkg['tree'])
     record['rule_files'] = pkg['rule_files']
 
-    # 5) 审核
-    if not cfg.get('review_enabled'):
-        record.update(stage='review', verdict='skip', manual=False)
-        record['review_file'] = store.save_review_text(
-            rid, '(审核已在面板关闭, 本次未做内容审核)', header=_review_header(record))
+    # 5) 审核 (force 与「面板关闭审核」都跳过, 但记录里区分开)
+    skip_reason = 'force' if force else ('config' if not cfg.get('review_enabled') else '')
+    if skip_reason:
+        note = ('(主人强制上传, 本次未做内容审核)' if skip_reason == 'force'
+                else '(审核已在面板关闭, 本次未做内容审核)')
+        record.update(stage='review', verdict='force' if skip_reason == 'force' else 'skip',
+                      manual=False)
+        record['review_file'] = store.save_review_text(rid, note, header=_review_header(record))
         return await _finish_deploy(event, cfg, record, data, staging, info, target, folder,
-                                    skipped=True)
+                                    skip_reason=skip_reason)
 
     meta = {'filename': fname, 'size': record['size'], 'total_size': info['total_size'],
             'mode': record['mode'], 'target': target['key'], 'folder': folder}
@@ -325,7 +344,8 @@ def _review_header(record: dict, result: dict | None = None) -> str:
         f'- 群: {record["group_id"]}',
         f'- 提交者: {record["username"] or record["user_id"]}',
         f'- 文件: {record["filename"]} ({record["size"]} B)',
-        f'- 模式: {"单文件增量" if record["mode"] == "file" else "压缩包"}',
+        f'- 模式: {"单文件增量" if record["mode"] == "file" else "压缩包"}'
+        + ('  [主人强制上传, 跳过审核]' if record.get('forced') else ''),
         f'- 目标: {record["target"]} ({record["target_path"]})'
         + (f' / 文件夹 {record["folder"]}' if record['folder'] else ''),
         f'- 包内文件数: {record.get("file_count", 0)}',
@@ -392,8 +412,20 @@ async def _finish_reject(event, cfg: dict, record: dict, result: dict):
     await _send(event, '\n'.join(lines))
 
 
+_DEPLOY_HEAD = {
+    '': '✅ 审核通过, 已上传到服务器',
+    'config': '✅ 已上传到服务器 (审核已关闭)',
+    'force': '✅ 已强制上传到服务器 (未经内容审核)',
+}
+_DEPLOY_FAIL_HEAD = {
+    '': '⚠️ 审核通过, 但上传失败, 需人工处理',
+    'config': '⚠️ 上传失败, 需人工处理',
+    'force': '⚠️ 强制上传失败, 需人工处理',
+}
+
+
 async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: str,
-                         info: dict, target: dict, folder: str, skipped: bool = False):
+                         info: dict, target: dict, folder: str, skip_reason: str = ''):
     fname = record['filename']
     if folder:
         res = await asyncio.to_thread(deploy.deploy_single, data, fname, folder, target, cfg)
@@ -405,7 +437,7 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
         record.update(stage='deploy', error=res['error'])
         _persist(record)
         lines = [
-            '⚠️ 审核通过, 但部署失败, 需人工处理' if not skipped else '⚠️ 部署失败, 需人工处理',
+            _DEPLOY_FAIL_HEAD.get(skip_reason, _DEPLOY_FAIL_HEAD['']),
             f'📦 文件: {fname} → {_where(record)}',
             f'❗ 原因: {res["error"]}',
             f'🆔 记录: {record["id"]}',
@@ -418,7 +450,7 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
     record.update(stage='deployed', dest=res['dest'], deploy_name=res['name'],
                   backup=res['backup'])
     _persist(record)
-    head = '✅ 审核通过, 已上传到服务器' if not skipped else '✅ 已上传到服务器 (审核已关闭)'
+    head = _DEPLOY_HEAD.get(skip_reason, _DEPLOY_HEAD[''])
     lines = [head, f'📦 文件: {fname} ({_size_mb(record["size"])})']
     if folder:
         lines.append(f'📂 位置: {record["target"]} / {folder}/{fname}{res["note"]}')

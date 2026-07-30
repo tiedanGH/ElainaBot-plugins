@@ -1,9 +1,10 @@
 """服务器上传插件 — 引用文件消息 → 下载 → 内容审核 → 上传到服务器目录。
 
 用法 (指定群内所有人可用):
-    /server help                 查看帮助与全部可用目标
-    /server <目标>               引用压缩包消息 → 解压到 <目标路径>/<压缩包名>/
-    /server <目标> <文件夹名>     引用单文件消息 → 写入 <目标路径>/<文件夹名>/<文件名>
+    /server help                       查看帮助与全部可用目标
+    /server <目标>                     引用压缩包消息 → 解压到 <目标路径>/<压缩包名>/
+    /server <目标> <文件夹名>           引用单文件消息 → 写入 <目标路径>/<文件夹名>/<文件名>
+    /server force <目标> [文件夹名]     仅主人: 跳过内容审核直传 (别名 f / 强制)
 
 「目标」是面板里配置的一行 (key + 别名 + 服务器路径), **面板加一行就多一个子指令**,
 不需要改代码; 同名目录 / 同名文件一律直接替换 (旧内容按配置备份到 data/backups)。
@@ -14,7 +15,8 @@
 data/reviews/, 群里只输出结论与未通过分类。
 
 审查标准按模式裁剪 (详见 app/review.py): 压缩包查「原作出处标注 + 内容合规 + 版权」;
-单文件不是完整游戏、通常不含 rule.md, 只查「内容合规 + 版权」。
+单文件不是完整游戏、通常不含 rule.md, 只查「内容合规 + 版权」。force 则完全跳过内容
+审核 —— 但压缩包成员名校验、体积限额、落地路径越界校验照做, 不因主人身份放宽。
 
 配置与记录: 后台侧边栏「服务器上传」页 (上传目标 / 密钥 / 群聊 / 通知人员 /
 审核记录 / 数据文件浏览)。
@@ -32,7 +34,7 @@ __plugin_meta__ = {
     'name': '服务器上传',
     'author': 'ElainaBot',
     'description': '引用群文件消息上传到服务器目录, 自动内容审核后落地 (子指令可在面板动态配置)',
-    'version': '1.0.1',
+    'version': '1.0.2',
 }
 
 log = get_logger(PLUGIN, '服务器上传')
@@ -46,6 +48,16 @@ _ICON = (
     '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
     '<path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>'
 )
+
+
+# 强制上传: 优先级高于普通指令并 block, 命中即拦截, 不会再落到下面的 cmd_server。
+# owner_only 由框架把关 —— 非主人命中时框架直接回「仅主人」模板并终止匹配链
+# (见 core/plugin/_dispatch.py), 所以普通处理器不会把 force 误当成目标名。
+@handler(r'^/?server\s+(?i:force|f|强制)(?:\s+([\s\S]+))?$', name='服务器强制上传',
+         desc='/server force <目标> [文件夹名] — 跳过内容审核直传服务器 (仅主人)',
+         owner_only=True, group_only=True, ignore_at_check=True, priority=10, block=True)
+async def cmd_server_force(event, match):
+    await flow.handle(event, (match.group(1) or '').strip(), force=True)
 
 
 # 子指令来自配置, 所以正则只认 /server 前缀, 参数交给 flow 动态解析 ——
