@@ -372,6 +372,8 @@ def _review_header(record: dict, result: dict | None = None) -> str:
             f'- 耗时: {result["elapsed"]}s',
             f'- 错误: {result["error"] or "无"}',
         ]
+        if result.get('image_fallback'):
+            lines.append('- 图片: 模型不支持图像输入, 已自动降级纯文本重审 (图片仅按文件清单审查)')
         floc = _finding_lines(record)
         if floc:
             lines.append('- 违规位置:')

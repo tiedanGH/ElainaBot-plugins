@@ -299,11 +299,34 @@ async def _post(messages: list, cfg: dict) -> tuple[dict | None, str]:
     return None, '调用失败'
 
 
+def _image_unsupported(err: str) -> bool:
+    """判断失败是否因为「模型不支持图像输入」。
+
+    典型报错 (deepseek 等纯文本模型): HTTP 400 ``unknown variant `image_url`,
+    expected `text```; OpenAI 兼容网关也可能报 ``image_url is not supported`` 等。
+    只认 4xx 客户端错误 + 错误文本提到 image, 避免把 5xx/网络故障误判成不支持。
+    """
+    low = (err or '').lower()
+    return low.startswith('http 4') and ('image_url' in low or 'image' in low)
+
+
+_IMAGE_FALLBACK_NOTE = (
+    '\n\n（注: 包内图片因当前审核模型不支持图像输入, 未能作为图像上送。'
+    '请照常审查全部文本内容; 图片素材的合规与版权仅能依据文件清单中的文件名、'
+    '尺寸以及 rule.md 中的素材来源声明判断, 声明缺失或不明确时按标准从严处理。）'
+)
+
+
 async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
     """执行一次审核。``meta['mode']`` 决定审查哪几条标准 (见模块 docstring)。
 
-    返回 ``{verdict, categories, manual, error, raw, model, elapsed, summary, findings, criteria}``。
-    ``manual=True`` 表示这次结果来自异常兜底而非模型的正常判定 —— 需人工处理。
+    返回 ``{verdict, categories, manual, error, raw, model, elapsed, summary,
+    findings, criteria, image_fallback}``。``manual=True`` 表示这次结果来自异常
+    兜底而非模型的正常判定 —— 需人工处理。
+
+    随包上送了图片而模型不支持图像输入 (HTTP 4xx 且报错提到 image) 时, 自动
+    降级为纯文本重审一次: 图片改为仅以文件清单形式参与审查, 并在正文注明,
+    ``image_fallback=True`` 供留档标注。
     """
     start = time.time()
     mode = meta.get('mode') or 'archive'
@@ -313,10 +336,17 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
         {'role': 'user', 'content': _build_content(pkg, meta)},
     ]
     resp, err = await _post(messages, cfg)
+    image_fallback = False
+    if resp is None and pkg['images'] and _image_unsupported(err):
+        image_fallback = True
+        text_only = _build_digest({**pkg, 'images': []}, meta) + _IMAGE_FALLBACK_NOTE
+        messages[1] = {'role': 'user', 'content': text_only}
+        resp, err = await _post(messages, cfg)
     elapsed = round(time.time() - start, 1)
     base: dict = {'verdict': 'reject', 'categories': ['other'], 'manual': True, 'error': err,
                   'raw': '', 'model': cfg.get('model', ''), 'elapsed': elapsed,
-                  'summary': '', 'findings': [], 'criteria': list(allowed)}
+                  'summary': '', 'findings': [], 'criteria': list(allowed),
+                  'image_fallback': image_fallback}
     if resp is None:
         return base
 
@@ -350,6 +380,7 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
         'summary': str(data.get('summary', ''))[:500],
         'findings': [] if verdict == 'pass' else findings,
         'criteria': list(allowed),
+        'image_fallback': image_fallback,
     }
 
 

@@ -31,7 +31,7 @@ DEFAULTS = {
         {'key': 'lgtbot', 'aliases': ['lgt'], 'path': '', 'desc': '上传群文件至 lgtbot'},
     ],
     # ---- 压缩包完整性 (非 AI 检查, force 上传同样执行) ----
-    'required_files': ['achievements.h', 'board.h', 'icon.png', 'mygame.cc',
+    'required_files': ['achievements.h', 'icon.png', 'mygame.cc',
                        'option.cmake', 'options.h', 'rule.md', 'unittest.cc'],
     # ---- 部署 ----
     'keep_replaced_backup': True,  # 替换前把旧目录/旧文件备份到 data/backups
