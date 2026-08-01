@@ -223,6 +223,21 @@ def collect(root_dir: str, limits: dict, image_quota: int) -> dict:
     return {'tree': tree, 'texts': texts, 'images': images, 'rule_files': rule_files}
 
 
+def missing_required(tree: list, required: list) -> list:
+    """压缩包完整性检查: 必需文件按**文件名**在任意层级匹配 (大小写不敏感)。
+
+    返回缺少的文件名列表 (空 = 完整)。这是纯结构检查, 与 AI 审核无关,
+    force 上传同样执行。
+    """
+    present = {os.path.basename(item.get('path', '')).lower() for item in tree}
+    out = []
+    for name in required or []:
+        name = str(name or '').strip()
+        if name and name.lower() not in present and name not in out:
+            out.append(name)
+    return out
+
+
 def collect_single(data: bytes, filename: str, limits: dict, image_quota: int) -> dict:
     """单文件上传的送审素材, 结构与 ``collect`` 一致 (只有一个成员)。"""
     low = (filename or '').lower()

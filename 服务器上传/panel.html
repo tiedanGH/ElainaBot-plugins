@@ -172,14 +172,17 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
         内置审核标准按上传模式裁剪：<b>压缩包</b>（完整游戏包）查 原作出处标注 + 内容合规 + 版权；
         <b>单文件</b>（增量替换）只查 内容合规 + 版权 —— 单文件不是完整游戏、通常不含 rule.md，
         不会因「缺少出处标注」被拒。<br>
-        主人可用 <code>/server force &lt;目标&gt; [文件夹名]</code>（别名 <code>f</code> / <code>强制</code>）跳过内容审核直传；
-        压缩包成员名校验、体积限额、落地路径越界校验仍然照做，记录里会标记「强制」。
+        内容合规基于 <b>QQ 青少年保护方案</b>从严判定：色情低俗 / 暴力血腥 / 赌博毒品 / 危险诱导 /
+        欺凌歧视 / 谣言 / 政治敏感 / 违法工具为明确违规；擦边暗示、不良价值观、未标注外链、变体字规避等
+        为疑似违规，同样不通过并标记「需人工复核」。未通过时群内只输出分类与位置（文件:行号），不输出违规内容。<br>
+        主人可用 <code>/server force &lt;目标&gt; [文件夹名]</code>（别名 <code>f</code> / <code>强制</code>）跳过内容审核直传，
+        压缩包成员名校验、体积限额、必需文件清单、落地路径越界校验仍然照做，记录里会标记「强制」。
       </div>
       <div id="test-result" class="result"></div>
     </div>
 
     <div class="card">
-      <h3>限额 <span class="hint">上传者是普通群成员，压缩包按不可信输入处理</span></h3>
+      <h3>限额与完整性 <span class="hint">上传者是普通群成员，压缩包按不可信输入处理</span></h3>
       <div class="grid4">
         <div class="field"><label>压缩包上限(MB)</label><input id="max_archive_mb" type="number" min="1" max="2048"></div>
         <div class="field"><label>解压后上限(MB)</label><input id="max_uncompressed_mb" type="number" min="1" max="8192"></div>
@@ -187,6 +190,13 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
         <div class="field"><label>下载超时(秒)</label><input id="download_timeout" type="number" min="5" max="600"></div>
         <div class="field"><label>送审文本预算(字符)</label><input id="text_budget" type="number" min="0" max="1000000" step="1000"></div>
         <div class="field"><label>送审图片张数（0=不送图）</label><input id="review_images" type="number" min="0" max="20"></div>
+      </div>
+      <div class="field" style="margin-top:14px">
+        <label>压缩包必需文件清单（每行一个文件名，任意层级匹配；留空 = 不检查）</label>
+        <textarea id="required_files" class="mono-ta" placeholder="achievements.h&#10;board.h&#10;icon.png&#10;…"></textarea>
+        <div class="hint" style="margin-top:6px">
+          非 AI 的结构检查：压缩包可以多出其他文件，但缺少任一必需文件即拒绝上传并汇报缺少哪些，<b>force 强制上传同样拒绝</b>。单文件上传不做此检查。
+        </div>
       </div>
       <div class="actions">
         <button class="btn btn-soft" onclick="loadConfig()">重新读取</button>
@@ -239,8 +249,8 @@ const API=(baseMatch?baseMatch[1]:'')+'/api/ext/svrupload';
 const BOOLS=['enabled','keep_replaced_backup','review_enabled','keep_archive'];
 const NUMS=['temperature','request_timeout','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget','review_images'];
 const TEXTS=['base_url','model','review_prompt'];
-const LISTS=['allowed_groups','notify_users'];
-const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',review:'审核',deploy:'部署失败',deployed:'已上传',error:'异常',cancelled:'已取消'};
+const LISTS=['allowed_groups','notify_users','required_files'];
+const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',integrity:'包不完整',review:'审核',deploy:'部署失败',deployed:'已上传',error:'异常',cancelled:'已取消'};
 
 let CFG={},LABELS={},RECORDS=[],TARGETS=[];
 
@@ -402,6 +412,10 @@ async function openRecord(id){
     ['提交者',(rec.username||'')+' '+(rec.user_id||'')],['文件',rec.filename],
     ['上传模式',(rec.mode==='file'?'单文件增量':'压缩包')+(rec.forced?'（主人强制上传，跳过审核）':'')],
     ['审查标准',(rec.criteria||[]).map(c=>LABELS[c]||c).join('、')||'-'],
+    ['违规位置',(rec.findings||[]).map(f=>{
+      let label=LABELS[f.category]||f.category||'其他';if(f.suspect)label+='·疑似';
+      return `[${label}] ${f.target||'?'}${f.line?':'+f.line:''}`;
+    }).join('；')||'-'],
     ['目标子指令',rec.target||'-'],['目标路径',rec.target_path||'-'],
     ['目标文件夹',rec.folder||'（压缩包同名文件夹）'],
     ['文件大小',fmtSize(rec.size)],['解压后大小',fmtSize(rec.total_size)],

@@ -84,7 +84,10 @@ async def _send(event, text: str):
         log.warning(f'主动消息发送失败: {e}')
 
 
-def _mentions(cfg: dict) -> str:
+def _mentions(cfg: dict, record: dict | None = None) -> str:
+    """结论消息里的 @ 部署人员串; force 指令由主人发起, 不再 @ 通知。"""
+    if record and record.get('forced'):
+        return ''
     users = cfg.get('notify_users') or []
     return ' '.join(f'<@{uid}>' for uid in users)
 
@@ -221,6 +224,7 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str, force: bo
         'archive_file': '',
         'model': '',
         'criteria': [],
+        'findings': [],
         'elapsed': 0.0,
         '_started': time.time(),
     }
@@ -306,7 +310,15 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
     record['file_count'] = len(pkg['tree'])
     record['rule_files'] = pkg['rule_files']
 
-    # 5) 审核 (force 与「面板关闭审核」都跳过, 但记录里区分开)
+    # 5) 压缩包完整性检查 (纯结构检查, 与 AI 审核无关, force 同样拒绝)
+    if not single:
+        missing = archive.missing_required(pkg['tree'], cfg.get('required_files') or [])
+        if missing:
+            record.update(stage='integrity', error='缺少必需文件: ' + '、'.join(missing))
+            return await _finish_fail(event, cfg, record, '压缩包不完整',
+                                      suffix='请补齐上述文件后重新打包上传')
+
+    # 6) 审核 (force 与「面板关闭审核」都跳过, 但记录里区分开)
     skip_reason = 'force' if force else ('config' if not cfg.get('review_enabled') else '')
     if skip_reason:
         note = ('(主人强制上传, 本次未做内容审核)' if skip_reason == 'force'
@@ -322,7 +334,7 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
     result = await review.review(pkg, meta, cfg)
     record.update(stage='review', verdict=result['verdict'], categories=result['categories'],
                   manual=result['manual'], model=result['model'], error=result['error'],
-                  criteria=result.get('criteria') or [])
+                  criteria=result.get('criteria') or [], findings=result.get('findings') or [])
     record['review_file'] = store.save_review_text(
         rid, result['raw'] or f'(无回复内容) 错误: {result["error"]}',
         header=_review_header(record, result))
@@ -330,7 +342,7 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
     if result['verdict'] != 'pass':
         return await _finish_reject(event, cfg, record, result)
 
-    # 6) 通过 → 部署
+    # 7) 通过 → 部署
     return await _finish_deploy(event, cfg, record, data, staging, info, target, folder)
 
 
@@ -360,6 +372,10 @@ def _review_header(record: dict, result: dict | None = None) -> str:
             f'- 耗时: {result["elapsed"]}s',
             f'- 错误: {result["error"] or "无"}',
         ]
+        floc = _finding_lines(record)
+        if floc:
+            lines.append('- 违规位置:')
+            lines += [f'    {x}' for x in floc]
     return '\n'.join(lines)
 
 
@@ -372,41 +388,71 @@ def _where(record: dict) -> str:
     return f'{record["target"]}/{record["folder"]}' if record['folder'] else record['target']
 
 
-def _fail_text(record: dict, cfg: dict, title: str) -> str:
+def _fail_text(record: dict, cfg: dict, title: str, suffix: str = '') -> str:
     """失败结论: 只给原因与记录号, 不含任何模型输出。"""
     lines = [
-        f'⚠️ {title}, 需人工处理',
+        f'⚠️ {title}, 需人工处理' if not suffix else f'⚠️ {title}',
         f'📦 文件: {record["filename"]} → {_where(record)}',
         f'❗ 原因: {record["error"] or "未知错误"}',
         f'🆔 记录: {record["id"]}',
     ]
-    at = _mentions(cfg)
+    if suffix:
+        lines.append(f'💡 {suffix}')
+    at = _mentions(cfg, record)
     if at:
-        lines.append(at + ' 请人工处理')
+        lines.append(at + (' 请知悉' if suffix else ' 请人工处理'))
     return '\n'.join(lines)
 
 
-async def _finish_fail(event, cfg: dict, record: dict, title: str):
+async def _finish_fail(event, cfg: dict, record: dict, title: str, suffix: str = ''):
     _persist(record)
-    await _send(event, _fail_text(record, cfg, title))
+    await _send(event, _fail_text(record, cfg, title, suffix))
+
+
+_MAX_SHOWN_FINDINGS = 8
+
+
+def _finding_lines(record: dict) -> list:
+    """违规位置列表 (只含分类 + 文件 + 行号, 绝不含违规内容原文)。"""
+    findings = record.get('findings') or []
+    lines = []
+    for i, f in enumerate(findings[:_MAX_SHOWN_FINDINGS], 1):
+        label = review.CATEGORY_LABELS.get(f.get('category'), '其他')
+        if f.get('suspect'):
+            label += '·疑似'
+        loc = f.get('target') or '(未标注位置)'
+        if f.get('line'):
+            loc += f':{f["line"]}'
+        lines.append(f'{i}. [{label}] {loc}')
+    if len(findings) > _MAX_SHOWN_FINDINGS:
+        lines.append(f'…… 其余 {len(findings) - _MAX_SHOWN_FINDINGS} 处见后台留档')
+    return lines
 
 
 async def _finish_reject(event, cfg: dict, record: dict, result: dict):
     _persist(record)
     if result['manual']:
-        title = '❌ 审核未通过 (审核服务异常, 需人工处理)'
-        detail = f'❗ 原因: {result["error"] or "审核服务无响应"}'
+        # 审核服务异常 (HTTP 失败/超时/解析失败): 群里只说明需人工处理,
+        # 具体报错在记录与留档里, 不刷进群聊。
+        lines = [
+            '⚠️ 审核服务异常, 需人工处理',
+            f'📦 文件: {record["filename"]} ({_size_mb(record["size"])}) → {_where(record)}',
+            f'🆔 记录: {record["id"]}',
+        ]
     else:
-        title = '❌ 审核未通过'
-        detail = f'🚫 未通过分类: {review.labels(result["categories"])}'
-    lines = [
-        title,
-        f'📦 文件: {record["filename"]} ({_size_mb(record["size"])}) → {_where(record)}',
-        detail,
-        f'🆔 记录: {record["id"]}',
-        '📄 详细说明已留档, 请在后台「服务器上传」页查看',
-    ]
-    at = _mentions(cfg)
+        suspect_only = bool(result['findings']) and all(f.get('suspect') for f in result['findings'])
+        lines = [
+            '❌ 审核未通过 (疑似违规, 需人工复核)' if suspect_only else '❌ 审核未通过',
+            f'📦 文件: {record["filename"]} ({_size_mb(record["size"])}) → {_where(record)}',
+            f'🚫 未通过分类: {review.labels(result["categories"])}',
+        ]
+        floc = _finding_lines(record)
+        if floc:
+            lines.append('📍 违规位置:')
+            lines += floc
+        lines.append(f'🆔 记录: {record["id"]}')
+        lines.append('📄 详细说明已留档, 请在后台「服务器上传」页查看')
+    at = _mentions(cfg, record)
     if at:
         lines.append(at + ' 请人工复核')
     await _send(event, '\n'.join(lines))
@@ -442,7 +488,7 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
             f'❗ 原因: {res["error"]}',
             f'🆔 记录: {record["id"]}',
         ]
-        at = _mentions(cfg)
+        at = _mentions(cfg, record)
         if at:
             lines.append(at + ' 请人工处理')
         return await _send(event, '\n'.join(lines))
@@ -460,7 +506,7 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
     lines.append(f'🆔 记录: {record["id"]}')
     if res['backup']:
         lines.append(f'♻️ 旧内容已备份: {os.path.basename(res["backup"])}')
-    at = _mentions(cfg)
+    at = _mentions(cfg, record)
     if at:
         lines.append(at + ' 已完成上传')
     await _send(event, '\n'.join(lines))

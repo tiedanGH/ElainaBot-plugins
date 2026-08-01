@@ -30,6 +30,9 @@ DEFAULTS = {
     'targets': [
         {'key': 'lgtbot', 'aliases': ['lgt'], 'path': '', 'desc': '上传群文件至 lgtbot'},
     ],
+    # ---- 压缩包完整性 (非 AI 检查, force 上传同样执行) ----
+    'required_files': ['achievements.h', 'board.h', 'icon.png', 'mygame.cc',
+                       'option.cmake', 'options.h', 'rule.md', 'unittest.cc'],
     # ---- 部署 ----
     'keep_replaced_backup': True,  # 替换前把旧目录/旧文件备份到 data/backups
     'keep_archive': True,        # 是否把原压缩包留档到 data/archives
@@ -59,6 +62,7 @@ _COMMENTS = {
     'allowed_groups': '允许执行 /server 指令的群 openid, 空列表 = 任何群都不生效',
     'notify_users': '每次执行完成后在群内 @ 的部署人员 openid',
     'targets': '上传目标: 每一项对应一个子指令 /server <key>; key=子指令名, aliases=别名, path=服务器绝对路径, desc=帮助里的说明',
+    'required_files': '压缩包必须包含的文件清单 (按文件名匹配, 任意层级), 缺一即拒绝 (force 同样检查); 空列表 = 不检查',
     'keep_replaced_backup': '替换前是否把旧目录/旧文件备份到 data/backups',
     'keep_archive': '是否把原压缩包留档到 data/archives',
     'review_enabled': '是否启用内容审核 (关闭后直接部署)',
@@ -82,7 +86,7 @@ _cache: dict | None = None
 _INT_FIELDS = ('review_images', 'request_timeout', 'max_archive_mb', 'max_uncompressed_mb',
                'max_files', 'text_budget', 'download_timeout')
 _BOOL_FIELDS = ('enabled', 'keep_replaced_backup', 'keep_archive', 'review_enabled')
-_LIST_FIELDS = ('allowed_groups', 'notify_users')
+_LIST_FIELDS = ('allowed_groups', 'notify_users', 'required_files')
 
 # 保留字: 不能当子指令名 (会挡住帮助与强制上传)
 RESERVED_KEYS = ('help', '帮助', 'list', '列表', 'force', 'f', '强制')

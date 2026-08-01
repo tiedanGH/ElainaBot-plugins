@@ -41,15 +41,33 @@ _ALIAS = {
     '版权素材': 'copyright', '版权': 'copyright', '素材': 'copyright', 'license': 'copyright',
 }
 
-# 审查标准正文 (按上传模式挑选组合)
+# 审查标准正文 (按上传模式挑选组合)。内容合规一条基于 QQ 青少年保护方案核心规则,
+# 从严判定: 明确违规与擦边疑似都判不通过, 疑似在 findings 里标 suspect 供人工复核。
 _CRITERIA = {
     'origin': ('原作出处标注',
                '游戏的规则说明 (rule.md) 中必须注明游戏原型出自何处 (如棋类的传统出处、改编自的桌游/电子游戏名称等)。'
                '部分版权素材的授权条件要求署名。缺少出处标注 → 不通过, 分类 origin。'),
-    'compliance': ('内容合规审查',
-                   '审查全部输出内容, 包括文字消息和图片 UI, 确保符合中国社交软件平台的内容规范。重点排查以下类别: '
-                   '赌博相关的语言或暗示 (如"押注"、"赔率"等措辞)、色情或擦边内容、政治敏感内容。如发现潜在违规, '
-                   '必须调整措辞或设计, 不得以"仅供娱乐"为由保留 —— 即发现此类内容即判不通过, 分类 compliance。'),
+    'compliance': ('内容合规审查 (QQ 青少年保护方案, 从严判定)',
+                   '审查全部输出内容, 包括文字消息、代码内嵌文案和图片 UI, 判断是否危害青少年身心健康。\n'
+                   '以下为【明确违规】, 发现即判不通过 (findings 中 suspect=false):\n'
+                   '  - 任何形式的色情、低俗、性暗示、裸体、性行为描写或色情链接/资源;\n'
+                   '  - 暴力、血腥、恐怖、虐待、自杀、自残等直接描述或诱导;\n'
+                   '  - 赌博、毒品、违禁药品、管制刀具/枪支等违法信息 (赌博相关的措辞如"押注"、"赔率"同样计入);\n'
+                   '  - 诱导青少年进行危险行为、恶作剧、侵犯隐私或泄露个人信息;\n'
+                   '  - 针对未成年人的网络欺凌、侮辱、歧视、仇恨言论;\n'
+                   '  - 传播谣言、虚假信息, 可能引发社会恐慌或损害未成年人身心健康;\n'
+                   '  - 政治敏感内容 (如分裂国家、攻击政府、歪曲历史等);\n'
+                   '  - 直接提供违法工具、黑客技术、翻墙软件等。\n'
+                   '以下为【疑似违规】, 同样判不通过, 但在 findings 中标 suspect=true (需人工复核):\n'
+                   '  - 内容擦边、隐晦暗示但未直接明说 (如隐喻性暗示、软色情、暧昧邀请);\n'
+                   '  - 不良价值观引导 (如拜金、攀比、厌学、早恋过度渲染), 但未直接教唆;\n'
+                   '  - 含有轻微暴力词汇 (如游戏化打斗), 但无血腥或具体伤害描述;\n'
+                   '  - 含有不确定的链接、二维码、外链, 但未明确标注其内容;\n'
+                   '  - 使用变体字、谐音、符号、拼音等刻意规避检测, 但语义模糊;\n'
+                   '  - 涉及未成年人交友、约见, 但未明确不良意图。\n'
+                   '判断原则: 从严判定 —— 内容介于违规和疑似之间时按疑似处理 (仍判不通过); 结合上下文 —— '
+                   '单句看似正常但整体语境异常 (如连续诱导) 时按最高风险级别判定; 不得以"仅供娱乐"为由保留。'
+                   '→ 分类 compliance。'),
     'copyright': ('版权审查',
                   '检查使用的全部美术作品、图片素材、字体等资源是否受版权保护。默认不得使用任何受版权保护的素材。'
                   '若某素材声称可用, 需进一步判断其授权范围是否覆盖"在 QQ 机器人中公开、非盈利使用" —— 注意有版权 ≠ 禁止使用, '
@@ -76,9 +94,15 @@ _OUTPUT_FORMAT = """【输出格式】
   "verdict": "pass" 或 "reject",
   "categories": [{cats}],
   "summary": "一句话结论",
-  "findings": [{{"category": "...", "target": "具体文件或素材", "reason": "为什么不通过"}}]
+  "findings": [{{"category": "...", "target": "包内文件相对路径", "line": 行号整数, "suspect": true或false, "reason": "为什么不通过"}}]
 }}
-verdict 为 pass 时 categories 与 findings 必须为空数组。上述 {n} 条标准中任意一条不满足即 reject, 并在 categories 中列出全部命中的分类。categories 只允许使用上面列出的取值。判断依据不足时按 reject 处理并说明缺什么。"""
+verdict 为 pass 时 categories 与 findings 必须为空数组。上述 {n} 条标准中任意一条不满足即 reject, 并在 categories 中列出全部命中的分类。categories 只允许使用上面列出的取值。判断依据不足时按 reject 处理并说明缺什么。
+
+findings 填写要求 (每一处问题单独一条):
+- target: 只写文件在包内的相对路径 (与文件清单一致), **严禁把违规内容原文写进 target**;
+- line: 违规所在行号 (送审文本每行已带 "行号|" 前缀, 直接引用该数字); 图片或整个文件性质的问题填 0;
+- suspect: 明确违规填 false, 疑似违规 (擦边、需人工复核) 填 true;
+- reason: 简要说明违反哪条规则, 仅供后台留档, 不会公开展示。"""
 
 _CN_NUM = ('一', '二', '三', '四', '五')
 
@@ -137,15 +161,20 @@ def _build_digest(pkg: dict, meta: dict) -> str:
         lines += ['', '## 随附图片 (已作为图像一并上送, 顺序同下)']
         lines += [f'- {i + 1}. {im["path"]} ({im["width"]}x{im["height"]})'
                   for i, im in enumerate(pkg['images'])]
-    lines += ['', '## 文本内容']
+    lines += ['', '## 文本内容 (每行前缀为 "行号|", findings.line 直接引用该数字)']
     for t in pkg['texts']:
         lines.append(f'\n### {t["path"]}' + ('  (已截断)' if t['truncated'] else ''))
         lines.append('```')
-        lines.append(t['content'])
+        lines.append(_number_lines(t['content']))
         lines.append('```')
     if not pkg['texts']:
         lines.append('（没有可读的文本文件）')
     return '\n'.join(lines)
+
+
+def _number_lines(content: str) -> str:
+    """给送审文本加 "行号|" 前缀, 让模型能精确报告违规行号。"""
+    return '\n'.join(f'{i}|{line}' for i, line in enumerate((content or '').split('\n'), 1))
 
 
 def _build_content(pkg: dict, meta: dict):
@@ -205,6 +234,38 @@ def labels(categories: list) -> str:
     return '、'.join(CATEGORY_LABELS.get(c, c) for c in categories) or '未标注分类'
 
 
+_TARGET_BAD = re.compile(r'[\r\n\t"\'`<>]')
+
+
+def _norm_findings(value, allowed: tuple) -> list:
+    """规整 findings 为 [{category, target, line, suspect}]。
+
+    group 消息与面板只展示这里清洗过的字段: target 剥掉引号/换行等非路径字符并
+    截断, line 强转非负整数 —— 即使模型违规把原文塞进来, 也只会剩下一段截断的
+    "疑似路径", 不会把违规内容原样带进群聊。reason 不进入该结构 (完整原文在
+    data/reviews/ 留档里)。
+    """
+    out = []
+    if not isinstance(value, list):
+        return out
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        cats = _norm_categories([item.get('category')], allowed)
+        target = _TARGET_BAD.sub('', str(item.get('target') or '')).strip()[:100]
+        try:
+            line = max(0, int(item.get('line') or 0))
+        except (TypeError, ValueError):
+            line = 0
+        out.append({
+            'category': cats[0] if cats else 'other',
+            'target': target or '(未标注位置)',
+            'line': line,
+            'suspect': bool(item.get('suspect')),
+        })
+    return out[:20]
+
+
 async def _post(messages: list, cfg: dict) -> tuple[dict | None, str]:
     """单次 /chat/completions 调用, 返回 (响应 JSON, 错误信息)。"""
     key = config.api_key()
@@ -253,9 +314,9 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
     ]
     resp, err = await _post(messages, cfg)
     elapsed = round(time.time() - start, 1)
-    base = {'verdict': 'reject', 'categories': ['other'], 'manual': True, 'error': err,
-            'raw': '', 'model': cfg.get('model', ''), 'elapsed': elapsed,
-            'summary': '', 'findings': [], 'criteria': list(allowed)}
+    base: dict = {'verdict': 'reject', 'categories': ['other'], 'manual': True, 'error': err,
+                  'raw': '', 'model': cfg.get('model', ''), 'elapsed': elapsed,
+                  'summary': '', 'findings': [], 'criteria': list(allowed)}
     if resp is None:
         return base
 
@@ -274,11 +335,10 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
         base['error'] = f'审核结论字段非法: {verdict!r}'
         return base
 
-    findings = data.get('findings') if isinstance(data.get('findings'), list) else []
+    findings = _norm_findings(data.get('findings'), allowed)
     cats = _norm_categories(data.get('categories'), allowed)
     if verdict == 'reject' and not cats:
-        cats = _norm_categories([f.get('category') for f in findings if isinstance(f, dict)],
-                                allowed) or ['other']
+        cats = _norm_categories([f['category'] for f in findings], allowed) or ['other']
     return {
         'verdict': verdict,
         'categories': [] if verdict == 'pass' else cats,
@@ -288,7 +348,7 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
         'model': base['model'],
         'elapsed': elapsed,
         'summary': str(data.get('summary', ''))[:500],
-        'findings': findings,
+        'findings': [] if verdict == 'pass' else findings,
         'criteria': list(allowed),
     }
 
