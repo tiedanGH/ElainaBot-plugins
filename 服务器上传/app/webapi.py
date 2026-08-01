@@ -117,8 +117,10 @@ async def _clear_records(request: web.Request):
 # ==================== 数据文件 ====================
 
 async def _get_files(request: web.Request):
-    return web.json_response({'success': True, 'files': store.list_files(),
-                              'data_dir': store.DATA_DIR})
+    """文件列表 (备份聚合为整夹条目) + 各模块目录大小统计。"""
+    data = store.list_entries()
+    return web.json_response({'success': True, 'files': data['entries'],
+                              'stats': data['stats'], 'data_dir': store.DATA_DIR})
 
 
 async def _get_file(request: web.Request):
@@ -129,8 +131,9 @@ async def _get_file(request: web.Request):
 
 
 async def _delete_file(request: web.Request):
+    """删除单个留档文件, 或 backups/ 下的整个备份文件夹。"""
     body = await _json(request)
-    err = store.delete_file(str(body.get('path', '')))
+    err = store.delete_entry(str(body.get('path', '')))
     if err:
         return web.json_response({'success': False, 'error': err})
     return web.json_response({'success': True})

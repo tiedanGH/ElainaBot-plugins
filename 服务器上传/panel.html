@@ -225,7 +225,9 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
       <h3>插件数据文件 <span class="hint" id="data-dir"></span>
         <span style="margin-left:auto"><button class="btn btn-sm" onclick="loadFiles()">刷新</button></span>
       </h3>
+      <div id="dir-stats" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px"></div>
       <div id="file-table"></div>
+      <div class="hint" style="margin-top:10px">备份（backups/）按整个文件夹展示与删除，不展开内部文件。</div>
     </div>
   </div>
 </div>
@@ -442,13 +444,23 @@ async function clearRecords(){
 }
 
 /* ==================== 数据文件 ==================== */
-async function loadFiles(){
-  const r=await api('/files');
-  if(!r.success)return toast('读取失败');
-  $('data-dir').textContent=r.data_dir||'';
-  const files=r.files||[];
-  if(!files.length){$('file-table').innerHTML='<div class="empty">数据目录为空</div>';return}
-  const rows=files.map(f=>`<tr>
+function renderDirStats(stats){
+  $('dir-stats').innerHTML=(stats||[]).map(s=>
+    `<span class="pill gray" title="${s.count} 个文件">📂 ${esc(s.name)} · ${fmtSize(s.size)} · ${s.count} 文件</span>`
+  ).join('');
+}
+function fileRow(f){
+  if(f.kind==='backup'){
+    return `<tr>
+      <td class="mono">📁 ${esc(f.display)}<div class="hint">备份文件夹 · ${f.count||0} 个文件</div></td>
+      <td class="mono">${fmtSize(f.size)}</td>
+      <td class="mono">${fmtTime(f.mtime)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-soft" onclick="delFile('${esc(f.path)}',true)">删除整个文件夹</button>
+      </td>
+    </tr>`;
+  }
+  return `<tr>
     <td class="mono">${esc(f.path)}</td>
     <td class="mono">${fmtSize(f.size)}</td>
     <td class="mono">${fmtTime(f.mtime)}</td>
@@ -456,9 +468,17 @@ async function loadFiles(){
       ${f.viewable?`<button class="btn btn-sm" onclick="viewFile('${esc(f.path)}')">查看</button>`:'<span class="hint">不可预览</span>'}
       <button class="btn btn-sm btn-soft" onclick="delFile('${esc(f.path)}')">删除</button>
     </td>
-  </tr>`).join('');
+  </tr>`;
+}
+async function loadFiles(){
+  const r=await api('/files');
+  if(!r.success)return toast('读取失败');
+  $('data-dir').textContent=r.data_dir||'';
+  renderDirStats(r.stats);
+  const files=r.files||[];
+  if(!files.length){$('file-table').innerHTML='<div class="empty">数据目录为空</div>';return}
   $('file-table').innerHTML=`<div class="tbl-wrap"><table><thead><tr>
-    <th>相对路径</th><th>大小</th><th>修改时间</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <th>相对路径</th><th>大小</th><th>修改时间</th><th></th></tr></thead><tbody>${files.map(fileRow).join('')}</tbody></table></div>`;
 }
 async function viewFile(path){
   const r=await api('/file?path='+encodeURIComponent(path));
@@ -467,8 +487,10 @@ async function viewFile(path){
   $('modal-body').innerHTML=`<pre class="raw">${esc(r.content||'(空文件)')}</pre>`;
   $('modal-mask').classList.add('show');
 }
-async function delFile(path){
-  if(!confirm('删除 '+path+' ？'))return;
+async function delFile(path,isBackup){
+  const tip=isBackup?('删除整个备份文件夹 '+path.replace(/^backups\//,'')+' ？其中全部文件将一并删除。')
+                    :('删除 '+path+' ？');
+  if(!confirm(tip))return;
   const r=await api('/file/delete','POST',{path});
   toast(r.success?'已删除':(r.error||'删除失败'));
   loadFiles();

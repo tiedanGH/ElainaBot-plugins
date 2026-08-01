@@ -6,12 +6,13 @@
     ├── reviews/<记录号>.md      模型的完整回复 (群里不输出, 只在此留档)
     ├── archives/<记录号>_x.zip  原压缩包留档 (keep_archive 开启时)
     ├── staging/<记录号>/        解压暂存 (部署或失败后清理)
-    ├── backups/<名称>.<时间戳>/ 覆盖部署时备份的旧目录
+    ├── backups/<目标>/<名称>.<时间戳>[/…]  替换时备份的旧目录/旧文件 (面板按整夹展示与删除)
     └── diagnostics/<记录号>.json  未能定位到文件时的原始消息载荷
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -187,11 +188,36 @@ def resolve(rel: str) -> str | None:
     return full
 
 
-def list_files() -> list:
-    """列出 data/ 下全部文件 (相对路径 + 大小 + 修改时间 + 是否可文本预览)。"""
+# 模块目录统计的固定展示顺序 (其后追加未知目录, 最后是根目录散文件)
+_KNOWN_DIRS = ('reviews', 'archives', 'backups', 'diagnostics', 'staging')
+_ROOT_STAT = '(根目录)'
+
+
+def _backup_unit(rel: str) -> str:
+    """把 backups/ 内文件的相对路径归到「备份单元」。
+
+    备份布局是 backups/<目标>/<被替换的目录或文件>.<时间戳>[/...] —— 单元取前
+    三段 (backups/lgtbot/gomoku.20260801-120000), 面板按 "lgtbot/xxx" 展示整个
+    文件夹, 不展开内部文件; 直接落在 backups/ 下的散文件自成一个单元 (兼容旧版)。
+    """
+    parts = rel.split('/')
+    return '/'.join(parts[:3]) if len(parts) > 2 else rel
+
+
+def list_entries() -> dict:
+    """数据文件列表 + 各模块目录大小统计。
+
+    返回 ``{'entries': [...], 'stats': [...]}``:
+      · entries — 普通文件为 {path, display, size, mtime, viewable, kind:'file'};
+        backups/ 内的文件聚合成 {path, display, size, mtime, count, kind:'backup'},
+        display 去掉 backups/ 前缀 (如 "lgtbot/gomoku.xxx"), 不展示内部文件。
+      · stats — 每个顶层模块目录的 {name, size, count}, 已知目录即使为空也列出。
+    """
     init()
     root = os.path.realpath(DATA_DIR)
-    out = []
+    entries: list = []
+    units: dict = {}
+    stats: dict = {name: {'name': name, 'size': 0, 'count': 0} for name in _KNOWN_DIRS}
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(dirnames)
         for fn in sorted(filenames):
@@ -201,14 +227,45 @@ def list_files() -> list:
             except OSError:
                 continue
             rel = os.path.relpath(full, root).replace('\\', '/')
-            out.append({
+            top = rel.split('/', 1)[0] if '/' in rel else _ROOT_STAT
+            bucket = stats.setdefault(top, {'name': top, 'size': 0, 'count': 0})
+            bucket['size'] += st.st_size
+            bucket['count'] += 1
+            if rel.startswith('backups/'):
+                unit = units.setdefault(_backup_unit(rel), {'size': 0, 'mtime': 0, 'count': 0})
+                unit['size'] += st.st_size
+                unit['count'] += 1
+                unit['mtime'] = max(unit['mtime'], int(st.st_mtime))
+                continue
+            entries.append({
                 'path': rel,
+                'display': rel,
                 'size': st.st_size,
                 'mtime': int(st.st_mtime),
                 'viewable': fn.lower().endswith(_TEXT_VIEW_EXTS) and st.st_size <= _MAX_VIEW_BYTES,
+                'kind': 'file',
             })
-    out.sort(key=lambda x: x['mtime'], reverse=True)
-    return out
+    for path, u in units.items():
+        entries.append({
+            'path': path,
+            'display': path[len('backups/'):] or path,
+            'size': u['size'],
+            'mtime': u['mtime'],
+            'count': u['count'],
+            'viewable': False,
+            'kind': 'backup',
+        })
+    entries.sort(key=lambda x: x['mtime'], reverse=True)
+    order = {name: i for i, name in enumerate(_KNOWN_DIRS)}
+    stat_list = sorted(stats.values(),
+                       key=lambda s: (order.get(s['name'], 90 if s['name'] != _ROOT_STAT else 99),
+                                      s['name']))
+    return {'entries': entries, 'stats': stat_list}
+
+
+def list_files() -> list:
+    """兼容旧调用: 仅返回文件/备份单元列表。"""
+    return list_entries()['entries']
 
 
 def read_file(rel: str) -> tuple[str, str]:
@@ -225,11 +282,28 @@ def read_file(rel: str) -> tuple[str, str]:
         return '', str(e)
 
 
-def delete_file(rel: str) -> str:
-    """删除 data/ 内的单个留档文件; 返回错误信息 (空串 = 成功)。配置文件禁止删除。"""
+def delete_entry(rel: str) -> str:
+    """删除 data/ 内的留档文件或备份文件夹; 返回错误信息 (空串 = 成功)。
+
+    目录删除只允许发生在 backups/ 内 (面板的备份单元整夹删除), 其余模块目录
+    (reviews/ archives/ …) 只能按单个文件删; 配置文件禁止删除。
+    """
     full = resolve(rel)
-    if not full or not os.path.isfile(full):
+    if not full or not os.path.exists(full):
         return '文件不存在'
+    if os.path.isdir(full):
+        broot = os.path.realpath(BACKUPS_DIR)
+        if full == broot or not full.startswith(broot + os.sep):
+            return '只允许删除 backups 下的备份文件夹'
+        shutil.rmtree(full, ignore_errors=True)
+        if os.path.exists(full):
+            return '删除失败, 文件可能被占用'
+        # 顺手收掉空掉的目标分组目录 (backups/<目标>/), 保持列表干净
+        parent = os.path.dirname(full)
+        if parent != broot and not os.listdir(parent):
+            with contextlib.suppress(OSError):
+                os.rmdir(parent)
+        return ''
     if os.path.basename(full) in ('config.yaml',):
         return '配置文件不允许删除'
     try:
@@ -237,3 +311,8 @@ def delete_file(rel: str) -> str:
     except OSError as e:
         return str(e)
     return ''
+
+
+def delete_file(rel: str) -> str:
+    """兼容旧调用名。"""
+    return delete_entry(rel)

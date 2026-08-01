@@ -40,7 +40,7 @@ __plugin_meta__ = {
     'name': '服务器上传',
     'author': 'ElainaBot',
     'description': '引用群文件消息上传到服务器目录, 自动内容审核后落地 (子指令可在面板动态配置)',
-    'version': '1.1.0',
+    'version': '1.1.1',
 }
 
 log = get_logger(PLUGIN, '服务器上传')
