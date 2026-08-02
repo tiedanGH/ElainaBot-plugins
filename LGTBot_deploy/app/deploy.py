@@ -4,10 +4,11 @@
   · 压缩包  ``/upload``            → 解压到 ``<上传目录>/<压缩包名>/``
   · 单文件  ``/upload <文件夹名>``  → 写入 ``<上传目录>/<文件夹名>/<文件名>``
 
-同名目录 / 同名文件一律**直接替换**; 替换前旧内容按配置备份到
-``data/backups/<target.key>/`` (target 由 config.upload_target() 构造, key 固定
-lgtbot)。目标路径先经名称合法性校验, 落地前再用 realpath 确认没有跳出上传目录,
-防止靠构造压缩包名 / 文件夹名穿越目录。
+同名目录 / 同名文件一律**直接替换**; 替换前旧内容按配置直接备份到
+``data/backups/`` (目录备份为 ``<名称>.<时间戳>/``, 单文件备份为
+``<文件夹>/<文件名>.<时间戳>``), 不再按上传目标分子目录。目标路径先经名称
+合法性校验, 落地前再用 realpath 确认没有跳出上传目录, 防止靠构造压缩包名 /
+文件夹名穿越目录。
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ def check_target(target: dict) -> str:
     key = (target or {}).get('key') or '上传'
     path = (target or {}).get('path') or ''
     if not path:
-        return f'{key} 上传目录未配置, 请在后台面板「服务器上传」页填写'
+        return f'{key} 上传目录未配置, 请在后台面板「LGTBot 自动部署」页填写'
     if not os.path.isabs(path):
         return f'{key} 上传目录必须是绝对路径: {path}'
     if not os.path.isdir(path):
@@ -62,19 +63,18 @@ def _inside(base_real: str, path_real: str) -> bool:
     return path_real == base_real or path_real.startswith(base_real + os.sep)
 
 
-def _backup_dir(target: dict) -> str:
-    return os.path.join(store.BACKUPS_DIR, target.get('key') or 'unknown')
-
-
 def _stash(src: str, target: dict, cfg: dict, rel: str) -> str:
-    """备份 (或直接删除) 将被替换的旧目录 / 旧文件, 返回备份路径 (未备份时为空串)。"""
+    """备份 (或直接删除) 将被替换的旧目录 / 旧文件, 返回备份路径 (未备份时为空串)。
+
+    备份直接落在 ``data/backups/`` 下, 不再按上传目标分子目录。
+    """
     if not cfg.get('keep_replaced_backup', True):
         if os.path.isdir(src):
             shutil.rmtree(src, ignore_errors=True)
         else:
             os.remove(src)
         return ''
-    dest = os.path.join(_backup_dir(target), f'{rel}.{time.strftime("%Y%m%d-%H%M%S")}')
+    dest = os.path.join(store.BACKUPS_DIR, f'{rel}.{time.strftime("%Y%m%d-%H%M%S")}')
     # 时间戳只有秒级: 同一秒内两次替换同一目标会撞名, shutil.move 会把新备份
     # 塞进旧备份目录里 (或直接报错), 撞名时追加序号保证路径唯一
     base, i = dest, 1

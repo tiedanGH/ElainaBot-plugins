@@ -36,7 +36,7 @@ from core.base.logger import PLUGIN, get_logger, report_error
 from . import archive, config, deploy, quoted, review, store
 from . import compile as compilemod
 
-log = get_logger(PLUGIN, '服务器上传')
+log = get_logger(PLUGIN, 'LGTBot_deploy')
 
 _tasks: set = set()
 # 「同时只处理一个上传」的占位标记。用同步标记而不是 asyncio.Lock:
@@ -256,7 +256,7 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str,
         _persist(record)
         raise
     except Exception as e:  # noqa: BLE001 — 兜底: 未预期异常也要给结论 + 留记录
-        report_error(PLUGIN, '服务器上传', e,
+        report_error(PLUGIN, 'LGTBot_deploy', e,
                      context={'record': rid, 'group_id': event.group_id})
         record.update(stage='error', error=f'{type(e).__name__}: {e}')
         _persist(record)
@@ -472,7 +472,7 @@ async def _finish_reject(event, cfg: dict, record: dict, result: dict):
             lines.append('📍 违规位置:')
             lines += floc
         lines.append(f'🆔 记录: {record["id"]}')
-        lines.append('📄 详细说明已留档, 请在后台「服务器上传」页查看')
+        lines.append('📄 详细说明已留档, 请在后台「LGTBot 自动部署」页查看')
     at = _mentions(cfg, record)
     if at:
         lines.append(at + ' 请人工复核')
@@ -612,7 +612,7 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str) -> str:
     lines = [
         '❌ 编译失败' + (f' (退出码 {rc})' if rc is not None else '') + ', 需人工排查',
         f'🆔 记录: {record["id"]}',
-        '📄 编译日志与 API 返回已留档, 请在后台「服务器上传」页查看',
+        '📄 编译日志与 API 返回已留档, 请在后台「LGTBot 自动部署」页查看',
     ]
     if at_dev:
         lines.append(at_dev + ' 请复查编译问题')

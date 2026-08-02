@@ -1,6 +1,6 @@
 """插件配置读写 (data/config.yaml)。
 
-面板与指令共用同一份配置, 全部字段都可在 Web 面板「服务器上传」页修改。
+面板与指令共用同一份配置, 全部字段都可在 Web 面板「LGTBot 自动部署」页修改。
 密钥留空时按 aidev 的优先级链回退: 本插件配置 > settings.yaml 的 ai.* > 环境变量,
 方便与框架内 AI 开发插件共用同一个中转站。
 """
@@ -126,7 +126,7 @@ def _coerce(data: dict) -> dict:
 def _write(data: dict):
     """带注释落盘 (原子替换)。"""
     os.makedirs(DATA_DIR, exist_ok=True)
-    lines = ['# 服务器上传插件配置 — 可在 Web 面板「服务器上传」页可视化修改', '']
+    lines = ['# LGTBot_deploy 插件配置 — 可在 Web 面板「LGTBot 自动部署」页可视化修改', '']
     for key, value in data.items():
         comment = _COMMENTS.get(key, '')
         if comment:

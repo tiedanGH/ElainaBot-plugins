@@ -6,7 +6,8 @@
     ├── reviews/<记录号>.md      模型的完整回复 (群里不输出, 只在此留档)
     ├── archives/<记录号>_x.zip  原压缩包留档 (keep_archive 开启时)
     ├── staging/<记录号>/        解压暂存 (部署或失败后清理)
-    ├── backups/<目标>/<名称>.<时间戳>[/…]  替换时备份的旧目录/旧文件 (面板按整夹展示与删除)
+    ├── backups/<名称>.<时间戳>[/…]  替换时备份的旧目录/旧文件 (面板按整夹展示与删除)
+    ├── backups/<文件夹>/<文件>.<时间戳>  单文件替换的备份
     └── diagnostics/<记录号>.json  未能定位到文件时的原始消息载荷
 """
 
@@ -264,12 +265,13 @@ _ROOT_STAT = '(根目录)'
 def _backup_unit(rel: str) -> str:
     """把 backups/ 内文件的相对路径归到「备份单元」。
 
-    备份布局是 backups/<目标>/<被替换的目录或文件>.<时间戳>[/...] —— 单元取前
-    三段 (backups/lgtbot/gomoku.20260801-120000), 面板按 "lgtbot/xxx" 展示整个
-    文件夹, 不展开内部文件; 直接落在 backups/ 下的散文件自成一个单元 (兼容旧版)。
+    备份直接落在 backups/ 下 (不再分目标子目录): 目录备份是
+    backups/<名称>.<时间戳>/..., 单文件备份是 backups/<文件夹>/<文件>.<时间戳>。
+    单元取前两段 (backups/ 下的第一层条目), 面板按整夹展示与删除, 不展开内部
+    文件; 旧版 backups/lgtbot/... 整组聚合为一个 "lgtbot" 单元, 可整夹清理。
     """
     parts = rel.split('/')
-    return '/'.join(parts[:3]) if len(parts) > 2 else rel
+    return '/'.join(parts[:2])
 
 
 def list_entries() -> dict:

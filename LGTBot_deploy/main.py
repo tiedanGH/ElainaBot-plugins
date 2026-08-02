@@ -1,4 +1,4 @@
-"""服务器上传插件 — 引用文件消息 → 下载 → 内容审核 → 上传到 lgtbot 目录。
+"""LGTBot_deploy — LGTBot 自动部署插件: 引用文件消息 → 下载 → 内容审核 → 上传到 lgtbot 目录。
 
 用法 (指定群内所有人可用):
     /upload                    引用压缩包消息 → 解压到 <上传目录>/<压缩包名>/
@@ -34,7 +34,7 @@ rule.md / unittest.cc), 可以多出其他文件, 缺少任一项即拒绝并汇
 自动把目录绑定给上传者, 此后仅绑定用户可更新该目录, 其他用户直接报权限不足且
 不进审核; force 不受限也不触发绑定。面板「权限管理」页可增删改。
 
-配置与记录: 后台侧边栏「服务器上传」页 (上传目录 / 审核密钥 / 编译密钥 / 群聊 /
+配置与记录: 后台侧边栏「LGTBot 自动部署」页 (上传目录 / 审核密钥 / 编译密钥 / 群聊 /
 通知人员 / 审核记录 / 权限管理 / 数据文件浏览)。
 """
 
@@ -47,15 +47,15 @@ from core.plugin.web_pages import register_page, unregister_page
 from .app import config, flow, store, webapi
 
 __plugin_meta__ = {
-    'name': '服务器上传',
+    'name': 'LGTBot 自动部署',
     'author': 'ElainaBot',
     'description': '/upload 引用群文件上传到 lgtbot 目录, 自动内容审核 + 请求编译 + 目录权限管理',
-    'version': '1.3.0',
+    'version': '1.3.1',
 }
 
-log = get_logger(PLUGIN, '服务器上传')
+log = get_logger(PLUGIN, 'LGTBot_deploy')
 
-_PAGE_KEY = 'server-upload'
+_PAGE_KEY = 'lgtbot-deploy'
 _HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'panel.html')
 
 _ICON = (
@@ -69,14 +69,14 @@ _ICON = (
 # 强制上传: 优先级高于普通指令并 block, 命中即拦截, 不会再落到下面的 cmd_upload。
 # owner_only 由框架把关 —— 非主人命中时框架直接回「仅主人」模板并终止匹配链
 # (见 core/plugin/_dispatch.py), 所以普通处理器不会把 force 误当成文件夹名。
-@handler(r'^/?upload\s+(?i:force|f)(?:\s+([\s\S]+))?$', name='服务器强制上传',
+@handler(r'^/?upload\s+(?i:force|f)(?:\s+([\s\S]+))?$', name='LGTBot强制部署',
          desc='/upload force [文件夹名] — 跳过内容审核直传 lgtbot (仅主人)',
          owner_only=True, group_only=True, ignore_at_check=True, priority=10, block=True)
 async def cmd_upload_force(event, match):
     await flow.handle(event, (match.group(1) or '').strip(), force=True)
 
 
-@handler(r'^/?upload(?:\s+([\s\S]+))?$', name='服务器上传',
+@handler(r'^/?upload(?:\s+([\s\S]+))?$', name='LGTBot部署',
          desc='/upload [文件夹名] — 引用群文件上传到 lgtbot (审核通过后落地)',
          group_only=True, ignore_at_check=True, priority=5)
 async def cmd_upload(event, match):
@@ -90,17 +90,17 @@ async def _on_load():
     webapi.register_routes()
     register_page(
         key=_PAGE_KEY,
-        label='服务器上传',
+        label='LGTBot 自动部署',
         source='plugin',
-        source_name='server_upload',
+        source_name='LGTBot_deploy',
         icon=_ICON,
         html_file=_HTML_PATH,
     )
-    log.info('服务器上传插件已加载')
+    log.info('LGTBot 自动部署插件已加载')
 
 
 @on_unload
 async def _on_unload():
     flow.cancel_all()
     unregister_page(_PAGE_KEY)
-    log.info('服务器上传插件已卸载')
+    log.info('LGTBot 自动部署插件已卸载')

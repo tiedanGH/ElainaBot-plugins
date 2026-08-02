@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>服务器上传</title>
+<title>LGTBot 自动部署</title>
 <style>
 :root{
   --bg:#f5f5f7;--card:#fff;--card2:#fafafa;--text:#1d1d1f;--muted:#8e8e93;
@@ -85,7 +85,7 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
 <div class="wrap">
   <div class="hero">
     <div>
-      <h1>服务器上传</h1>
+      <h1>LGTBot 自动部署</h1>
       <div class="sub">群成员引用群文件消息执行 <code>/upload [文件夹名]</code>，自动内容审核（仅文字）后落地到 lgtbot 目录；结论与未通过分类回群，完整审核回复只留档在插件数据目录。</div>
     </div>
     <div class="badge" id="state-badge">加载中…</div>
@@ -296,7 +296,7 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
 <script>
 const TOKEN=new URLSearchParams(location.search).get('token')||'';
 const baseMatch=location.pathname.match(/^(.*)\/api\/web-pages\//);
-const API=(baseMatch?baseMatch[1]:'')+'/api/ext/svrupload';
+const API=(baseMatch?baseMatch[1]:'')+'/api/ext/lgtbotdeploy';
 
 const BOOLS=['enabled','keep_replaced_backup','review_enabled','keep_archive','compile_enabled'];
 const NUMS=['temperature','request_timeout','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget','compile_timeout'];

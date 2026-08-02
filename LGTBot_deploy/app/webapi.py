@@ -1,4 +1,4 @@
-"""Web 面板路由 /api/ext/svrupload/* — 配置、审核记录、目录权限、数据文件浏览。
+"""Web 面板路由 /api/ext/lgtbotdeploy/* — 配置、审核记录、目录权限、数据文件浏览。
 
 路由由框架 register_route 动态查表执行, 插件热重载即时生效, 卸载时框架自动
 注销, 无需手动清理。默认 auth=True: 请求需带后台登录 token。
@@ -11,9 +11,9 @@ from core.plugin.web_pages import register_route
 
 from . import config, deploy, review, store
 
-log = get_logger(PLUGIN, '服务器上传')
+log = get_logger(PLUGIN, 'LGTBot_deploy')
 
-PREFIX = '/api/ext/svrupload'
+PREFIX = '/api/ext/lgtbotdeploy'
 
 
 def register_routes():
@@ -30,7 +30,7 @@ def register_routes():
     register_route('GET', PREFIX + '/files', _get_files)
     register_route('GET', PREFIX + '/file', _get_file)
     register_route('POST', PREFIX + '/file/delete', _delete_file)
-    log.info(f'服务器上传面板路由已注册: {PREFIX}/*')
+    log.info(f'LGTBot 自动部署面板路由已注册: {PREFIX}/*')
 
 
 async def _json(request: web.Request) -> dict:
