@@ -51,8 +51,6 @@ textarea{resize:vertical;min-height:80px;line-height:1.65}
 .actions{display:flex;justify-content:flex-end;gap:9px;flex-wrap:wrap;margin-top:6px}
 .switch{display:flex;align-items:center;gap:9px;padding:11px 13px;border:1px solid var(--border);border-radius:11px;background:var(--card2);font-size:12.5px;font-weight:600;color:var(--text2);cursor:pointer}
 .switch input{width:auto;margin:0}
-.t-row{padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--card2);margin-bottom:10px}
-.t-row:last-child{margin-bottom:0}
 code{background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em}
 .tbl-wrap{overflow:auto;border:1px solid var(--border);border-radius:12px}
 table{width:100%;border-collapse:collapse;font-size:12px}
@@ -88,7 +86,7 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
   <div class="hero">
     <div>
       <h1>服务器上传</h1>
-      <div class="sub">群成员引用群文件消息执行 <code>/server &lt;目标&gt; [文件夹名]</code>，自动内容审核后落地到服务器目录；结论与未通过分类回群，完整审核回复只留档在插件数据目录。</div>
+      <div class="sub">群成员引用群文件消息执行 <code>/upload [文件夹名]</code>，自动内容审核（仅文字）后落地到 lgtbot 目录；结论与未通过分类回群，完整审核回复只留档在插件数据目录。</div>
     </div>
     <div class="badge" id="state-badge">加载中…</div>
   </div>
@@ -120,21 +118,17 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
           <textarea id="notify_users" class="mono-ta" placeholder="每行一个用户 openid"></textarea>
         </div>
       </div>
+      <div class="field" style="margin-bottom:14px">
+        <label>lgtbot 上传目录（服务器绝对路径，须已存在）</label>
+        <input id="upload_dir" class="mono" placeholder="/home/lighthouse/ElainaBot_v2/plugins/LGTBot_ElainaBot/lgtbot/games">
+      </div>
       <div class="grid2" style="margin-bottom:0">
         <label class="switch"><input type="checkbox" id="enabled"> 启用插件</label>
         <label class="switch"><input type="checkbox" id="keep_replaced_backup"> 替换前备份旧内容到 data/backups</label>
       </div>
-    </div>
-
-    <div class="card">
-      <h3>上传目标 <span class="hint">每一行就是一个子指令 <code>/server &lt;子指令&gt;</code>，加一行即多一个上传目标，无需改代码</span>
-        <span style="margin-left:auto"><button class="btn btn-sm btn-line" onclick="addTarget()">+ 添加目标</button></span>
-      </h3>
-      <div id="target-rows"></div>
       <div class="hint" style="margin-top:10px">
-        子指令名不区分大小写，不能含空格 / <code>/</code> / <code>\</code> 等路径字符，也不能叫 <code>help</code>；别名用空格或逗号分隔。<br>
-        路径需为服务器上已存在的绝对路径。用法：<code>/server &lt;子指令&gt;</code> 引用压缩包 → 解压到该路径下的同名文件夹；
-        <code>/server &lt;子指令&gt; &lt;文件夹名&gt;</code> 引用单文件 → 写入该路径下已存在的这个文件夹。
+        用法：<code>/upload</code> 引用压缩包 → 解压到上传目录下的同名文件夹；
+        <code>/upload &lt;文件夹名&gt;</code> 引用单文件 → 写入上传目录下已存在的这个文件夹；重名一律直接替换。
       </div>
     </div>
 
@@ -169,16 +163,17 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
         <textarea id="review_prompt" placeholder="例如：额外检查是否包含外链地址…"></textarea>
       </div>
       <div class="hint" style="margin-top:10px">
+        <b>送审内容只有文字</b>（文件清单 + 文本文件内容），不上送图片 —— deepseek 等纯文本模型可直接使用。<br>
         内置审核标准按上传模式裁剪：<b>压缩包</b>（完整游戏包）查 原作出处标注 + 内容合规 + 版权；
         <b>单文件</b>（增量替换）只查 内容合规 + 版权 —— 单文件不是完整游戏、通常不含 rule.md，
         不会因「缺少出处标注」被拒。<br>
         内容合规基于 <b>QQ 青少年保护方案</b>从严判定：色情低俗 / 暴力血腥 / 赌博毒品 / 危险诱导 /
         欺凌歧视 / 谣言 / 政治敏感 / 违法工具为明确违规；擦边暗示、不良价值观、未标注外链、变体字规避等
         为疑似违规，同样不通过并标记「需人工复核」。未通过时群内只输出分类与位置（文件:行号），不输出违规内容。<br>
-        模型不支持图像输入（如 deepseek）时自动降级：本次图片改为仅按文件清单审查并纯文本重审一次，留档会注明；
-        长期使用纯文本模型也可直接把「送审图片张数」设为 0，省一次失败往返。<br>
-        主人可用 <code>/server force &lt;目标&gt; [文件夹名]</code>（别名 <code>f</code> / <code>强制</code>）跳过内容审核直传，
-        压缩包成员名校验、体积限额、必需文件清单、落地路径越界校验仍然照做，记录里会标记「强制」。
+        版权<b>仅依据文字内容</b>判断（长段抄袭文本、文字中声明的未授权素材等）；图片、字体等二进制资源不审查，
+        <b>来源未知不构成拒绝理由</b>。<br>
+        主人可用 <code>/upload force [文件夹名]</code>（force 可简写 <code>f</code>）跳过内容审核直传，
+        压缩包成员名校验、体积限额、必需文件清单、落地路径越界校验仍然照做，记录里会标记「强制」，完成后不 @ 通知部署人员。
       </div>
       <div id="test-result" class="result"></div>
     </div>
@@ -191,7 +186,6 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
         <div class="field"><label>文件数上限</label><input id="max_files" type="number" min="1" max="100000"></div>
         <div class="field"><label>下载超时(秒)</label><input id="download_timeout" type="number" min="5" max="600"></div>
         <div class="field"><label>送审文本预算(字符)</label><input id="text_budget" type="number" min="0" max="1000000" step="1000"></div>
-        <div class="field"><label>送审图片张数（0=不送图）</label><input id="review_images" type="number" min="0" max="20"></div>
       </div>
       <div class="field" style="margin-top:14px">
         <label>压缩包必需文件清单（每行一个文件名，任意层级匹配；留空 = 不检查）</label>
@@ -251,12 +245,12 @@ const baseMatch=location.pathname.match(/^(.*)\/api\/web-pages\//);
 const API=(baseMatch?baseMatch[1]:'')+'/api/ext/svrupload';
 
 const BOOLS=['enabled','keep_replaced_backup','review_enabled','keep_archive'];
-const NUMS=['temperature','request_timeout','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget','review_images'];
-const TEXTS=['base_url','model','review_prompt'];
+const NUMS=['temperature','request_timeout','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget'];
+const TEXTS=['upload_dir','base_url','model','review_prompt'];
 const LISTS=['allowed_groups','notify_users','required_files'];
 const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',integrity:'包不完整',review:'审核',deploy:'部署失败',deployed:'已上传',error:'异常',cancelled:'已取消'};
 
-let CFG={},LABELS={},RECORDS=[],TARGETS=[];
+let CFG={},LABELS={},RECORDS=[];
 
 function $(id){return document.getElementById(id)}
 function esc(v){return String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
@@ -284,41 +278,15 @@ function switchTab(name){
 }
 
 /* ==================== 配置 ==================== */
-function renderTargets(){
-  if(!TARGETS.length){
-    $('target-rows').innerHTML='<div class="empty">还没有上传目标，点「+ 添加目标」新增一个子指令</div>';
-    return;
-  }
-  $('target-rows').innerHTML=TARGETS.map((t,i)=>`<div class="row t-row">
-    <div class="field" style="max-width:150px;min-width:110px"><label>子指令名</label>
-      <input class="mono" value="${esc(t.key)}" oninput="editTarget(${i},'key',this.value)" placeholder="lgtbot"></div>
-    <div class="field" style="max-width:160px;min-width:110px"><label>别名</label>
-      <input class="mono" value="${esc((t.aliases||[]).join(' '))}" oninput="editTarget(${i},'aliases',this.value)" placeholder="lgt"></div>
-    <div class="field" style="flex:2;min-width:200px"><label>服务器路径（绝对）</label>
-      <input class="mono" value="${esc(t.path)}" oninput="editTarget(${i},'path',this.value)" placeholder="/srv/lgtbot/games"></div>
-    <div class="field" style="flex:1;min-width:150px"><label>帮助说明</label>
-      <input value="${esc(t.desc)}" oninput="editTarget(${i},'desc',this.value)" placeholder="上传群文件至 lgtbot"></div>
-    <button class="btn btn-soft" onclick="delTarget(${i})" title="删除该目标">删除</button>
-  </div>`).join('');
-}
-function editTarget(i,field,value){
-  if(!TARGETS[i])return;
-  TARGETS[i][field]=field==='aliases'?value.split(/[\s,，/|]+/).filter(Boolean):value;
-}
-function addTarget(){TARGETS.push({key:'',aliases:[],path:'',desc:''});renderTargets()}
-function delTarget(i){TARGETS.splice(i,1);renderTargets()}
-
 function renderConfig(){
   BOOLS.forEach(k=>$(k).checked=!!CFG[k]);
   NUMS.concat(TEXTS).forEach(k=>{if($(k))$(k).value=CFG[k]??''});
   LISTS.forEach(k=>$(k).value=(CFG[k]||[]).join('\n'));
-  TARGETS=JSON.parse(JSON.stringify(CFG.targets||[]));renderTargets();
   $('api_key').value='';
   const src=CFG.api_key_source;
   $('key-state').textContent=src==='plugin'?'（已在本插件配置）':src==='inherit'?'（继承框架 ai 配置）':'（未配置）';
-  const usable=(CFG.targets||[]).filter(t=>t.path).length;
-  const ready=CFG.enabled&&CFG.api_key_set&&(CFG.allowed_groups||[]).length&&usable;
-  $('state-badge').textContent=ready?`配置就绪 · ${usable} 个目标`:'配置未完成';
+  const ready=CFG.enabled&&CFG.api_key_set&&(CFG.allowed_groups||[]).length&&CFG.upload_dir;
+  $('state-badge').textContent=ready?'配置就绪':'配置未完成';
   $('state-badge').style.color=ready?'':'var(--warn)';
 }
 async function loadConfig(){
@@ -332,26 +300,19 @@ function collect(){
   NUMS.forEach(k=>body[k]=Number($(k).value||0));
   TEXTS.forEach(k=>body[k]=$(k).value.trim());
   LISTS.forEach(k=>body[k]=$(k).value.split(/[\s,，]+/).map(s=>s.trim()).filter(Boolean));
-  body.targets=TARGETS.map(t=>({key:(t.key||'').trim(),aliases:t.aliases||[],
-                                path:(t.path||'').trim(),desc:(t.desc||'').trim()}))
-                      .filter(t=>t.key);
   const key=$('api_key').value.trim();
   if(key)body.api_key=key;
   return body;
 }
 async function saveConfig(){
   const btn=$('btn-save');setBusy(btn,true);
-  const body=collect();
-  const r=await api('/config','POST',body);
+  const r=await api('/config','POST',collect());
   setBusy(btn,false,'保存配置');
   if(!r.success)return show($('save-result'),false,'保存失败: '+esc(r.error||''));
   CFG=r.config||{};renderConfig();
-  const kept=(CFG.targets||[]).length,sent=body.targets.length;
   let msg='✅ 配置已保存并立即生效';
-  if(kept<sent)msg+=`<br>⚠️ 有 ${sent-kept} 个目标被忽略：子指令名重复、为空、含空格或路径字符、或叫 help`;
-  const noPath=(CFG.targets||[]).filter(t=>!t.path).map(t=>t.key);
-  if(noPath.length)msg+=`<br>⚠️ 未填路径的目标暂不可用：${esc(noPath.join('、'))}`;
-  show($('save-result'),true,msg+`<br>当前可用子指令：${esc((CFG.targets||[]).filter(t=>t.path).map(t=>'/server '+t.key).join('、'))||'无'}`);
+  if(!CFG.upload_dir)msg+='<br>⚠️ 尚未填写 lgtbot 上传目录，/upload 暂不可用';
+  show($('save-result'),true,msg);
 }
 async function loadModels(){
   const r=await api('/models?base_url='+encodeURIComponent($('base_url').value.trim()));
@@ -420,7 +381,7 @@ async function openRecord(id){
       let label=LABELS[f.category]||f.category||'其他';if(f.suspect)label+='·疑似';
       return `[${label}] ${f.target||'?'}${f.line?':'+f.line:''}`;
     }).join('；')||'-'],
-    ['目标子指令',rec.target||'-'],['目标路径',rec.target_path||'-'],
+    ['上传目标',rec.target||'-'],['目标路径',rec.target_path||'-'],
     ['目标文件夹',rec.folder||'（压缩包同名文件夹）'],
     ['文件大小',fmtSize(rec.size)],['解压后大小',fmtSize(rec.total_size)],
     ['包内文件数',rec.file_count??'-'],['rule 文件',(rec.rule_files||[]).join('、')||'未发现'],

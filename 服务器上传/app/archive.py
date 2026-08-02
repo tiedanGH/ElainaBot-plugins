@@ -12,7 +12,6 @@ from __future__ import annotations
 import io
 import os
 import shutil
-import struct
 import tarfile
 import zipfile
 
@@ -24,7 +23,6 @@ IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')
 FONT_EXTS = ('.ttf', '.otf', '.ttc', '.woff', '.woff2')
 
 _MAX_TEXT_PER_FILE = 20000       # 单个文本文件上送的字符上限
-_MAX_IMAGE_BYTES = 3 * 1024 * 1024   # 单张上送图片的体积上限
 
 
 class ArchiveError(Exception):
@@ -143,41 +141,15 @@ def _read_text(path: str) -> str:
         return ''
 
 
-def image_size(data: bytes) -> tuple[int, int]:
-    """不依赖 PIL 读 PNG / JPEG / GIF 尺寸, 解析失败返回 (0, 0)。"""
-    try:
-        if data[:8] == b'\x89PNG\r\n\x1a\n':
-            return struct.unpack('>II', data[16:24])
-        if data[:3] == b'GIF':
-            return struct.unpack('<HH', data[6:10])
-        if data[:2] == b'\xff\xd8':
-            i = 2
-            while i < len(data):
-                while i < len(data) and data[i] != 0xFF:
-                    i += 1
-                while i < len(data) and data[i] == 0xFF:
-                    i += 1
-                marker = data[i]
-                i += 1
-                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
-                    h, w = struct.unpack('>HH', data[i + 3:i + 7])
-                    return (w, h)
-                i += struct.unpack('>H', data[i:i + 2])[0]
-    except Exception:  # noqa: BLE001 — 尺寸只用于清单展示, 解析失败不影响审核
-        pass
-    return (0, 0)
-
-
-def collect(root_dir: str, limits: dict, image_quota: int) -> dict:
-    """遍历解压结果, 产出送审素材。
+def collect(root_dir: str, limits: dict) -> dict:
+    """遍历解压结果, 产出送审素材 (仅文字: 图片/字体等二进制资源只进清单, 不读内容)。
 
     返回:
       ``tree``    [{path, size, kind}]      全部文件清单 (kind: text/image/font/binary)
       ``texts``   [{path, content, truncated}]  文本内容 (受 text_budget 预算约束)
-      ``images``  [{path, size, width, height, data}]  待上送的图片 (最多 image_quota 张)
       ``rule_files`` 命中 rule*.md / readme 的路径列表
     """
-    tree, texts, images, rule_files = [], [], [], []
+    tree, texts, rule_files = [], [], []
     budget = max(0, int(limits.get('text_budget', 0)))
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = sorted(d for d in dirnames if d not in ('.git', '__pycache__', 'node_modules'))
@@ -210,17 +182,9 @@ def collect(root_dir: str, limits: dict, image_quota: int) -> dict:
                     content, truncated = content[:budget], True
                 budget -= len(content)
                 texts.append({'path': rel, 'content': content, 'truncated': truncated})
-            elif kind == 'image' and len(images) < image_quota and size <= _MAX_IMAGE_BYTES:
-                try:
-                    with open(full, 'rb') as f:
-                        blob = f.read()
-                except OSError:
-                    continue
-                w, h = image_size(blob)
-                images.append({'path': rel, 'size': size, 'width': w, 'height': h, 'data': blob})
     # rule.md 必须优先送审: 把它排到文本列表最前面
     texts.sort(key=lambda t: (0 if t['path'].lower().endswith('rule.md') else 1, t['path']))
-    return {'tree': tree, 'texts': texts, 'images': images, 'rule_files': rule_files}
+    return {'tree': tree, 'texts': texts, 'rule_files': rule_files}
 
 
 def missing_required(tree: list, required: list) -> list:
@@ -238,8 +202,8 @@ def missing_required(tree: list, required: list) -> list:
     return out
 
 
-def collect_single(data: bytes, filename: str, limits: dict, image_quota: int) -> dict:
-    """单文件上传的送审素材, 结构与 ``collect`` 一致 (只有一个成员)。"""
+def collect_single(data: bytes, filename: str, limits: dict) -> dict:
+    """单文件上传的送审素材, 结构与 ``collect`` 一致 (只有一个成员, 仅文字送审)。"""
     low = (filename or '').lower()
     if low.endswith(IMAGE_EXTS):
         kind = 'image'
@@ -250,13 +214,10 @@ def collect_single(data: bytes, filename: str, limits: dict, image_quota: int) -
     else:
         kind = 'binary'
     tree = [{'path': filename, 'size': len(data), 'kind': kind}]
-    texts, images = [], []
+    texts = []
     if kind == 'text' and limits.get('text_budget', 0) > 0:
         budget = min(int(limits['text_budget']), _MAX_TEXT_PER_FILE)
         raw = data.decode('utf-8', errors='replace')
         texts.append({'path': filename, 'content': raw[:budget], 'truncated': len(raw) > budget})
-    elif kind == 'image' and image_quota > 0 and len(data) <= _MAX_IMAGE_BYTES:
-        w, h = image_size(data)
-        images.append({'path': filename, 'size': len(data), 'width': w, 'height': h, 'data': data})
     rule_files = [filename] if low.endswith('rule.md') else []
-    return {'tree': tree, 'texts': texts, 'images': images, 'rule_files': rule_files}
+    return {'tree': tree, 'texts': texts, 'rule_files': rule_files}

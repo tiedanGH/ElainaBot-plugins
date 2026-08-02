@@ -1,14 +1,18 @@
-"""内容审核 — 调用 OpenAI 兼容接口对上传内容做合规判定。
+"""内容审核 — 调用 OpenAI 兼容接口对上传内容做合规判定 (纯文本, 不送图片)。
 
 接口调用形式沿用框架内 AI 开发插件 (``plugins/AI开发插件/app/relay.py``):
 ``POST {base_url}/chat/completions`` + ``Authorization: Bearer <key>``。这里不带
 任何工具调用, 只要一次判定结果。
 
+**送审内容只有文字**: 文件清单 + 文本文件内容。图片/字体等二进制资源不上送,
+版权标准也只依据文字判断 —— 图片来源未知**不构成**版权拒绝理由 (deepseek 等
+纯文本模型因此可直接使用, 无需多模态支持)。
+
 **审查标准按上传模式裁剪** (见 ``_CRITERIA`` / ``build_system_prompt``):
-  · 压缩包 (完整游戏包) —— 原作出处标注 + 内容合规 + 版权, 三条全查。
-  · 单文件 (增量替换)  —— 只查内容合规 + 版权。单文件不是完整游戏, 通常不含
-    规则说明 (rule.md), 出处标注无从判断, 所以这条标准根本不进提示词, 也不接受
-    模型返回 origin 分类, 避免每次传补丁文件都被"缺少出处"挡下来。
+  · 压缩包 (完整游戏包) —— 原作出处标注 + 内容合规 + 版权(仅文字), 三条全查。
+  · 单文件 (增量替换)  —— 只查内容合规 + 版权(仅文字)。单文件不是完整游戏,
+    通常不含规则说明 (rule.md), 出处标注无从判断, 所以这条标准根本不进提示词,
+    也不接受模型返回 origin 分类, 避免每次传补丁文件都被"缺少出处"挡下来。
 
 **判定结果只取结构化 JSON 里的 verdict / categories**, 模型的自然语言说明与
 思考过程一律不进入群消息, 由 store.py 落盘到 data/reviews/。任何异常
@@ -18,7 +22,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 import time
@@ -48,7 +51,7 @@ _CRITERIA = {
                '游戏的规则说明 (rule.md) 中必须注明游戏原型出自何处 (如棋类的传统出处、改编自的桌游/电子游戏名称等)。'
                '部分版权素材的授权条件要求署名。缺少出处标注 → 不通过, 分类 origin。'),
     'compliance': ('内容合规审查 (QQ 青少年保护方案, 从严判定)',
-                   '审查全部输出内容, 包括文字消息、代码内嵌文案和图片 UI, 判断是否危害青少年身心健康。\n'
+                   '审查送审的全部文字内容, 包括规则说明、代码内嵌文案与输出消息文本, 判断是否危害青少年身心健康。\n'
                    '以下为【明确违规】, 发现即判不通过 (findings 中 suspect=false):\n'
                    '  - 任何形式的色情、低俗、性暗示、裸体、性行为描写或色情链接/资源;\n'
                    '  - 暴力、血腥、恐怖、虐待、自杀、自残等直接描述或诱导;\n'
@@ -68,12 +71,15 @@ _CRITERIA = {
                    '判断原则: 从严判定 —— 内容介于违规和疑似之间时按疑似处理 (仍判不通过); 结合上下文 —— '
                    '单句看似正常但整体语境异常 (如连续诱导) 时按最高风险级别判定; 不得以"仅供娱乐"为由保留。'
                    '→ 分类 compliance。'),
-    'copyright': ('版权审查',
-                  '检查使用的全部美术作品、图片素材、字体等资源是否受版权保护。默认不得使用任何受版权保护的素材。'
-                  '若某素材声称可用, 需进一步判断其授权范围是否覆盖"在 QQ 机器人中公开、非盈利使用" —— 注意有版权 ≠ 禁止使用, '
-                  '许多授权允许非商业用途, 但也有许多要求署名、禁止再分发或禁止任何形式公开使用。判断不确定或授权不明确时, '
-                  '一律拒绝使用该素材, 并明确指出拒绝原因 (具体是哪个素材、属于什么版权、为何不可用), '
-                  '等待提交者提供合规替代方案 → 分类 copyright。'),
+    'copyright': ('版权审查 (仅依据文字内容)',
+                  '仅依据送审的**文字内容**做版权判断:\n'
+                  '  - 文本/代码/规则说明中出现受版权保护的长段文字 (如歌词、小说或文章原文、他人教程整段照搬);\n'
+                  '  - 文字中明确声明使用了未经授权的素材 (如"图片取自某游戏截图""字体为某商用字体"却无授权说明);\n'
+                  '  - 文字中声称的授权与使用方式明显冲突 (如标注 CC BY-NC-ND 却再分发修改版)。\n'
+                  '以上情况 → 不通过, 分类 copyright。\n'
+                  '注意: 本次审核**不检查图片、字体等二进制资源本身**。图片来源未知、无法确认图片版权、'
+                  '文件清单里存在图片/字体 —— 这些都**不构成**拒绝理由, 不得仅因此判 copyright 不通过; '
+                  '只有文字内容中存在上述明确证据时才计入。'),
 }
 
 # 压缩包 = 完整游戏包, 三条全查; 单文件 = 增量替换, 只查合规与版权
@@ -100,7 +106,7 @@ verdict 为 pass 时 categories 与 findings 必须为空数组。上述 {n} 条
 
 findings 填写要求 (每一处问题单独一条):
 - target: 只写文件在包内的相对路径 (与文件清单一致), **严禁把违规内容原文写进 target**;
-- line: 违规所在行号 (送审文本每行已带 "行号|" 前缀, 直接引用该数字); 图片或整个文件性质的问题填 0;
+- line: 违规所在行号 (送审文本每行已带 "行号|" 前缀, 直接引用该数字); 整个文件性质的问题填 0;
 - suspect: 明确违规填 false, 疑似违规 (擦边、需人工复核) 填 true;
 - reason: 简要说明违反哪条规则, 仅供后台留档, 不会公开展示。"""
 
@@ -149,18 +155,6 @@ def _build_digest(pkg: dict, meta: dict) -> str:
         ]
     for item in pkg['tree']:
         lines.append(f'- {item["path"]}  [{item["kind"]}, {item["size"]} B]')
-    imgs = [t for t in pkg['tree'] if t['kind'] == 'image']
-    fonts = [t for t in pkg['tree'] if t['kind'] == 'font']
-    lines += [
-        '',
-        f'## 美术/字体资源统计: 图片 {len(imgs)} 个, 字体 {len(fonts)} 个',
-    ]
-    if fonts:
-        lines += [f'- 字体: {f["path"]}' for f in fonts]
-    if pkg['images']:
-        lines += ['', '## 随附图片 (已作为图像一并上送, 顺序同下)']
-        lines += [f'- {i + 1}. {im["path"]} ({im["width"]}x{im["height"]})'
-                  for i, im in enumerate(pkg['images'])]
     lines += ['', '## 文本内容 (每行前缀为 "行号|", findings.line 直接引用该数字)']
     for t in pkg['texts']:
         lines.append(f'\n### {t["path"]}' + ('  (已截断)' if t['truncated'] else ''))
@@ -175,20 +169,6 @@ def _build_digest(pkg: dict, meta: dict) -> str:
 def _number_lines(content: str) -> str:
     """给送审文本加 "行号|" 前缀, 让模型能精确报告违规行号。"""
     return '\n'.join(f'{i}|{line}' for i, line in enumerate((content or '').split('\n'), 1))
-
-
-def _build_content(pkg: dict, meta: dict):
-    """无图片时返回纯文本; 有图片时返回 OpenAI 多模态 content 数组。"""
-    digest = _build_digest(pkg, meta)
-    if not pkg['images']:
-        return digest
-    content = [{'type': 'text', 'text': digest}]
-    for im in pkg['images']:
-        ext = im['path'].rsplit('.', 1)[-1].lower()
-        mime = 'image/jpeg' if ext in ('jpg', 'jpeg') else f'image/{ext}'
-        b64 = base64.b64encode(im['data']).decode('ascii')
-        content.append({'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{b64}'}})
-    return content
 
 
 def _extract_json(text: str) -> dict | None:
@@ -299,54 +279,25 @@ async def _post(messages: list, cfg: dict) -> tuple[dict | None, str]:
     return None, '调用失败'
 
 
-def _image_unsupported(err: str) -> bool:
-    """判断失败是否因为「模型不支持图像输入」。
-
-    典型报错 (deepseek 等纯文本模型): HTTP 400 ``unknown variant `image_url`,
-    expected `text```; OpenAI 兼容网关也可能报 ``image_url is not supported`` 等。
-    只认 4xx 客户端错误 + 错误文本提到 image, 避免把 5xx/网络故障误判成不支持。
-    """
-    low = (err or '').lower()
-    return low.startswith('http 4') and ('image_url' in low or 'image' in low)
-
-
-_IMAGE_FALLBACK_NOTE = (
-    '\n\n（注: 包内图片因当前审核模型不支持图像输入, 未能作为图像上送。'
-    '请照常审查全部文本内容; 图片素材的合规与版权仅能依据文件清单中的文件名、'
-    '尺寸以及 rule.md 中的素材来源声明判断, 声明缺失或不明确时按标准从严处理。）'
-)
-
-
 async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
-    """执行一次审核。``meta['mode']`` 决定审查哪几条标准 (见模块 docstring)。
+    """执行一次审核 (纯文本)。``meta['mode']`` 决定审查哪几条标准 (见模块 docstring)。
 
     返回 ``{verdict, categories, manual, error, raw, model, elapsed, summary,
-    findings, criteria, image_fallback}``。``manual=True`` 表示这次结果来自异常
-    兜底而非模型的正常判定 —— 需人工处理。
-
-    随包上送了图片而模型不支持图像输入 (HTTP 4xx 且报错提到 image) 时, 自动
-    降级为纯文本重审一次: 图片改为仅以文件清单形式参与审查, 并在正文注明,
-    ``image_fallback=True`` 供留档标注。
+    findings, criteria}``。``manual=True`` 表示这次结果来自异常兜底而非模型的
+    正常判定 —— 需人工处理。
     """
     start = time.time()
     mode = meta.get('mode') or 'archive'
     allowed = criteria_keys(mode)
     messages = [
         {'role': 'system', 'content': build_system_prompt(mode, cfg.get('review_prompt'))},
-        {'role': 'user', 'content': _build_content(pkg, meta)},
+        {'role': 'user', 'content': _build_digest(pkg, meta)},
     ]
     resp, err = await _post(messages, cfg)
-    image_fallback = False
-    if resp is None and pkg['images'] and _image_unsupported(err):
-        image_fallback = True
-        text_only = _build_digest({**pkg, 'images': []}, meta) + _IMAGE_FALLBACK_NOTE
-        messages[1] = {'role': 'user', 'content': text_only}
-        resp, err = await _post(messages, cfg)
     elapsed = round(time.time() - start, 1)
     base: dict = {'verdict': 'reject', 'categories': ['other'], 'manual': True, 'error': err,
                   'raw': '', 'model': cfg.get('model', ''), 'elapsed': elapsed,
-                  'summary': '', 'findings': [], 'criteria': list(allowed),
-                  'image_fallback': image_fallback}
+                  'summary': '', 'findings': [], 'criteria': list(allowed)}
     if resp is None:
         return base
 
@@ -380,7 +331,6 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
         'summary': str(data.get('summary', ''))[:500],
         'findings': [] if verdict == 'pass' else findings,
         'criteria': list(allowed),
-        'image_fallback': image_fallback,
     }
 
 

@@ -1,17 +1,17 @@
 """指令解析 + 上传流程编排: 取引用文件 → 下载 → 解压/校验 → 审核 → 部署 → 记录 → @通知。
 
-指令形态 (子指令来自配置, 不硬编码):
-    /server help                       查看帮助与全部可用目标
-    /server <目标>                     引用压缩包消息 → 解压到 <目标路径>/<压缩包名>/
-    /server <目标> <文件夹名>           引用单文件消息 → 写入 <目标路径>/<文件夹名>/<文件名>
-    /server force <目标> [文件夹名]     仅主人: 跳过内容审核直传服务器
+指令形态 (唯一上传目录 lgtbot, 路径在面板配置):
+    /upload                    引用压缩包消息 → 解压到 <上传目录>/<压缩包名>/
+    /upload <文件夹名>          引用单文件消息 → 写入 <上传目录>/<文件夹名>/<文件名>
+    /upload force [文件夹名]    仅主人: 跳过内容审核直传 (force 可简写 f)
+    /upload help               查看指令帮助
 
-「目标」是面板里配置的一行 (key + 别名 + 服务器路径), 面板加一行就多一个子指令,
-不需要改代码。同名目录 / 同名文件一律直接替换。
+同名目录 / 同名文件一律直接替换 (旧内容按配置备份到 data/backups)。
 
-force (别名 f / 强制) 只跳过**内容审核**: 压缩包的成员名校验、体积/数量限额、
+force 只跳过**内容审核**: 压缩包的成员名校验、体积/数量限额、必需文件清单、
 落地路径越界校验一律照做 —— 那些是服务器完整性的底线, 与审不审内容无关。
-主人权限由框架的 owner_only 判定 (见 main.py), flow 这边只按 force 标记走流程。
+主人权限由框架的 owner_only 判定 (见 main.py), flow 这边只按 force 标记走流程;
+force 由主人本人发起, 完成后不再 @ 通知部署人员。
 
 设计要点:
   · 指令**所有人可执行**, 但只在 config.allowed_groups 列出的群里生效;
@@ -48,24 +48,26 @@ HELP_KEYWORDS = ('help', '帮助', 'list', '列表')
 
 
 def usage() -> str:
-    """帮助文案 —— 可用子指令实时取自配置。"""
-    items = config.targets()
-    lines = ['📋 服务器文件上传指令帮助', '']
-    if items:
-        for t in items:
-            desc = t['desc'] or f'上传群文件至 {t["key"]}'
-            alias = f'（别名: {"、".join(t["aliases"])}）' if t['aliases'] else ''
-            lines.append(f'-> {desc}{alias}')
-            lines.append(f'/server {t["key"]} [文件夹名]')
-    else:
-        lines.append('⚠️ 还没有配置任何上传目标, 请在后台面板「服务器上传」页添加')
-    lines += [
+    """帮助文案 (必需文件清单实时取自配置)。"""
+    required = config.all_config().get('required_files') or []
+    lines = [
+        '📋 lgtbot 文件上传指令帮助',
         '',
-        '🔸上传需引用一条群文件消息',
-        '🔸压缩包: 不带文件夹名, 解压至目标路径下的同名文件夹, 存在重名文件夹时直接替换',
-        '🔸单文件: 需指定目标路径下已存在的文件夹名, 存在重名文件时直接替换',
-        '🔸压缩包支持 zip / tar.gz / tar.bz2 / tar.xz; 内容需含 rule.md 并注明游戏原型出处',
+        '-> 上传群文件压缩包至 lgtbot',
+        '/upload',
+        '-> 上传单文件至 lgtbot 下的指定文件夹',
+        '/upload <文件夹名>',
+        '-> 强制上传, 跳过内容审核 (仅主人)',
+        '/upload force [文件夹名]',
+        '',
+        '🔸上传需引用一条群文件消息, 审核通过后自动落地',
+        '🔸压缩包: 解压至 lgtbot 下的同名文件夹, 重名文件夹直接替换',
+        '🔸单文件: 写入 lgtbot 下已存在的指定文件夹, 重名文件直接替换',
+        '🔸压缩包支持 zip / tar.gz / tar.bz2 / tar.xz',
     ]
+    if required:
+        lines.append('🔸压缩包必须包含: ' + '、'.join(required))
+    lines.append('🔸rule.md 需注明游戏原型出处')
     return '\n'.join(lines)
 
 
@@ -95,10 +97,10 @@ def _mentions(cfg: dict, record: dict | None = None) -> str:
 # ==================== 主入口 ====================
 
 async def handle(event, argline: str, force: bool = False) -> bool:
-    """指令入口: 解析 ``/server`` 参数 + 校验后把耗时流程丢到后台任务。
+    """指令入口: 解析 ``/upload`` 参数 + 校验后把耗时流程丢到后台任务。
 
-    ``argline`` 是目标与文件夹名部分 (已剥掉 force 关键字)。``force=True`` 表示
-    这次由主人发起、跳过内容审核 —— 该权限已由 main.py 的 owner_only 把关。
+    ``argline`` 是可选的文件夹名 (已剥掉 force 关键字)。``force=True`` 表示这次
+    由主人发起、跳过内容审核 —— 该权限已由 main.py 的 owner_only 把关。
     返回 True 表示已受理 (后台在跑), False 表示未受理。
 
     普通调用在「插件关闭」「群不在白名单」时**静默返回**, 避免把提示刷到无关群;
@@ -110,32 +112,27 @@ async def handle(event, argline: str, force: bool = False) -> bool:
             await _send(event, '❌ 插件已在后台面板关闭, 请先启用')
         return False
     if not config.is_group_allowed(event.group_id):
-        log.info(f'群 {event.group_id} 不在允许列表, 忽略 /server 指令')
+        log.info(f'群 {event.group_id} 不在允许列表, 忽略 /upload 指令')
         if force:
             await _send(event, '❌ 当前群不在允许列表, 请先在后台面板「生效范围」添加本群')
         return False
 
     args = (argline or '').split()
-    # 无参数 / help → 帮助 (可用目标实时取自配置)
-    if not args or args[0].lower() in HELP_KEYWORDS:
+    if args and args[0].lower() in HELP_KEYWORDS:
         await _send(event, usage())
         return False
-    if len(args) > 2:
-        prefix = '/server force' if force else '/server'
-        await _send(event, f'❌ 参数过多\n用法: {prefix} <目标> [文件夹名]\n发送 /server help 查看帮助')
+    if len(args) > 1:
+        prefix = '/upload force' if force else '/upload'
+        await _send(event, f'❌ 参数过多\n用法: {prefix} [文件夹名]\n发送 /upload help 查看帮助')
         return False
 
-    target = config.find_target(args[0])
-    if target is None:
-        await _send(event, f'❌ 未知的上传目标「{args[0]}」\n'
-                           f'当前可用: {config.target_names()}\n发送 /server help 查看帮助')
-        return False
+    target = config.upload_target()
     err = deploy.check_target(target)
     if err:
         await _send(event, f'❌ {err}')
         return False
 
-    folder = args[1] if len(args) == 2 else ''
+    folder = args[0] if args else ''
     if folder:
         name_err = deploy.bad_name(folder)
         if name_err:
@@ -147,7 +144,7 @@ async def handle(event, argline: str, force: bool = False) -> bool:
         rid = store.new_record_id()
         saved = store.save_diagnostic(rid, quoted.debug_payload(event))
         log.info(f'未能从引用消息定位文件, 原始载荷已存 {saved or "(保存失败)"}')
-        await _send(event, '❌ 未检测到文件, 请引用一条群文件消息后再执行本指令')
+        await _send(event, '❌ 未检测到文件, 请引用一条群文件消息后再执行本指令\n发送 /upload help 查看帮助')
         return False
 
     fname = store.safe_filename(ref.get('filename'))
@@ -155,7 +152,7 @@ async def handle(event, argline: str, force: bool = False) -> bool:
     if not folder and not is_archive:
         await _send(event, f'❌ 引用的文件「{fname}」不是支持的压缩包\n'
                            '压缩包支持 zip / tar.gz / tar.bz2 / tar.xz；\n'
-                           f'如需上传单文件, 请指定目标文件夹: /server {target["key"]} <文件夹名>')
+                           '如需上传单文件, 请指定目标文件夹: /upload <文件夹名>')
         return False
     if not folder:
         base_err = deploy.bad_name(deploy.strip_archive_ext(fname))
@@ -285,7 +282,7 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
 
     if single:
         # 单文件: 不解压, 直接把这一个文件送审
-        pkg = archive.collect_single(data, fname, limits, int(cfg['review_images']))
+        pkg = archive.collect_single(data, fname, limits)
     else:
         # 3) 解压到暂存目录 (成员名与体积在 archive 内逐条校验)
         staging = store.staging_path(rid)
@@ -301,8 +298,8 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
         record['total_size'] = info['total_size']
         record['root'] = info['root']
 
-        # 4) 采集送审内容
-        pkg = await asyncio.to_thread(archive.collect, staging, limits, int(cfg['review_images']))
+        # 4) 采集送审内容 (仅文字)
+        pkg = await asyncio.to_thread(archive.collect, staging, limits)
         if not pkg['tree']:
             record.update(stage='extract', error='压缩包内没有任何文件')
             return await _finish_fail(event, cfg, record, '压缩包为空')
@@ -372,8 +369,6 @@ def _review_header(record: dict, result: dict | None = None) -> str:
             f'- 耗时: {result["elapsed"]}s',
             f'- 错误: {result["error"] or "无"}',
         ]
-        if result.get('image_fallback'):
-            lines.append('- 图片: 模型不支持图像输入, 已自动降级纯文本重审 (图片仅按文件清单审查)')
         floc = _finding_lines(record)
         if floc:
             lines.append('- 违规位置:')
@@ -462,8 +457,8 @@ async def _finish_reject(event, cfg: dict, record: dict, result: dict):
 
 _DEPLOY_HEAD = {
     '': '✅ 审核通过, 已上传到服务器',
-    'config': '✅ 已上传到服务器 (审核已关闭)',
-    'force': '✅ 已强制上传到服务器 (未经内容审核)',
+    'config': '✅ 已上传到服务器\n⚠️ 审核功能已关闭',
+    'force': '✅ 已强制上传到服务器\n⚠️ 文件未经内容审核)',
 }
 _DEPLOY_FAIL_HEAD = {
     '': '⚠️ 审核通过, 但上传失败, 需人工处理',

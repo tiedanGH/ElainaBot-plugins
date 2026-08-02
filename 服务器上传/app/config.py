@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import os
-import re
 import threading
 
 import yaml
@@ -25,20 +24,16 @@ DEFAULTS = {
     'allowed_groups': [],
     # ---- 完成后 @ 通知的部署人员 (用户 openid) ----
     'notify_users': [],
-    # ---- 上传目标: 每一项就是一个子指令 /server <key> [文件夹]。
-    #      面板里加一行即多一个子指令, 不需要改代码。 ----
-    'targets': [
-        {'key': 'lgtbot', 'aliases': ['lgt'], 'path': '', 'desc': '上传群文件至 lgtbot'},
-    ],
+    # ---- 上传目录: /upload 的唯一落地位置 (lgtbot games 目录, 服务器绝对路径) ----
+    'upload_dir': '',
     # ---- 压缩包完整性 (非 AI 检查, force 上传同样执行) ----
     'required_files': ['achievements.h', 'icon.png', 'mygame.cc',
                        'option.cmake', 'options.h', 'rule.md', 'unittest.cc'],
     # ---- 部署 ----
     'keep_replaced_backup': True,  # 替换前把旧目录/旧文件备份到 data/backups
     'keep_archive': True,        # 是否把原压缩包留档到 data/archives
-    # ---- 审核 ----
+    # ---- 审核 (仅文字: 图片/字体等二进制资源不送审) ----
     'review_enabled': True,      # 关闭后不做内容审核, 直接部署 (仅用于上游故障应急)
-    'review_images': 4,          # 随包上送审核的图片张数 (0 = 不上送图片, 需模型支持视觉)
     'review_prompt': '',         # 追加到内置审核标准之后的自定义要求
     # ---- 模型接口 (OpenAI 兼容) ----
     'base_url': 'https://api.ytea.top/v1',
@@ -59,14 +54,13 @@ WRITABLE = tuple(DEFAULTS.keys())
 
 _COMMENTS = {
     'enabled': '插件总开关',
-    'allowed_groups': '允许执行 /server 指令的群 openid, 空列表 = 任何群都不生效',
-    'notify_users': '每次执行完成后在群内 @ 的部署人员 openid',
-    'targets': '上传目标: 每一项对应一个子指令 /server <key>; key=子指令名, aliases=别名, path=服务器绝对路径, desc=帮助里的说明',
+    'allowed_groups': '允许执行 /upload 指令的群 openid, 空列表 = 任何群都不生效',
+    'notify_users': '每次执行完成后在群内 @ 的部署人员 openid (force 强制上传不通知)',
+    'upload_dir': 'lgtbot 上传目录 (服务器绝对路径), /upload 的唯一落地位置',
     'required_files': '压缩包必须包含的文件清单 (按文件名匹配, 任意层级), 缺一即拒绝 (force 同样检查); 空列表 = 不检查',
     'keep_replaced_backup': '替换前是否把旧目录/旧文件备份到 data/backups',
     'keep_archive': '是否把原压缩包留档到 data/archives',
     'review_enabled': '是否启用内容审核 (关闭后直接部署)',
-    'review_images': '随包上送审核的图片张数, 0 = 不上送',
     'review_prompt': '追加到内置审核标准之后的自定义要求',
     'base_url': 'OpenAI 兼容接口地址',
     'api_key': '接口密钥, 留空则回退 settings.yaml 的 ai.api_key / 环境变量',
@@ -83,56 +77,10 @@ _COMMENTS = {
 _lock = threading.Lock()
 _cache: dict | None = None
 
-_INT_FIELDS = ('review_images', 'request_timeout', 'max_archive_mb', 'max_uncompressed_mb',
+_INT_FIELDS = ('request_timeout', 'max_archive_mb', 'max_uncompressed_mb',
                'max_files', 'text_budget', 'download_timeout')
 _BOOL_FIELDS = ('enabled', 'keep_replaced_backup', 'keep_archive', 'review_enabled')
 _LIST_FIELDS = ('allowed_groups', 'notify_users', 'required_files')
-
-# 保留字: 不能当子指令名 (会挡住帮助与强制上传)
-RESERVED_KEYS = ('help', '帮助', 'list', '列表', 'force', 'f', '强制')
-_KEY_BAD = re.compile(r'[\s/\\:*?"<>|]')
-
-
-def _norm_key(value) -> str:
-    """子指令名归一: 去空白、转小写, 拒绝含路径分隔符等危险字符与保留字。"""
-    key = str(value or '').strip().lower()
-    if not key or _KEY_BAD.search(key) or key in RESERVED_KEYS or key.startswith('.'):
-        return ''
-    return key[:32]
-
-
-def _norm_targets(value) -> list:
-    """规整上传目标列表: [{key, aliases, path, desc}], key/别名全局去重。"""
-    out, seen = [], set()
-    if isinstance(value, dict):          # 兼容 {key: path} 写法
-        value = [{'key': k, 'path': v} for k, v in value.items()]
-    if not isinstance(value, list):
-        return out
-    for item in value:
-        if isinstance(item, str):
-            item = {'key': item}
-        if not isinstance(item, dict):
-            continue
-        key = _norm_key(item.get('key'))
-        if not key or key in seen:
-            continue
-        raw = item.get('aliases')
-        if isinstance(raw, str):
-            raw = re.split(r'[\s,，/|]+', raw)
-        aliases = []
-        for a in raw or []:
-            a = _norm_key(a)
-            if a and a != key and a not in seen and a not in aliases:
-                aliases.append(a)
-        seen.add(key)
-        seen.update(aliases)
-        out.append({
-            'key': key,
-            'aliases': aliases,
-            'path': str(item.get('path') or '').strip(),
-            'desc': str(item.get('desc') or '').strip(),
-        })
-    return out
 
 
 def _coerce(data: dict) -> dict:
@@ -153,8 +101,6 @@ def _coerce(data: dict) -> dict:
                 out[k] = float(v)
             except (TypeError, ValueError):
                 pass
-        elif k == 'targets':
-            out[k] = _norm_targets(v)
         elif k in _LIST_FIELDS:
             if isinstance(v, str):
                 v = [v]
@@ -197,6 +143,12 @@ def all_config(refresh: bool = False) -> dict:
                     raw = loaded
             except Exception:  # noqa: BLE001 — 配置损坏时按默认值继续运行
                 raw = {}
+        # 1.1.x → 1.2.0 迁移: 旧多目标 targets 收敛为单一 lgtbot 目录, 取第一个有路径的目标
+        if 'upload_dir' not in raw and isinstance(raw.get('targets'), list):
+            for t in raw['targets']:
+                if isinstance(t, dict) and str(t.get('path') or '').strip():
+                    raw['upload_dir'] = str(t['path']).strip()
+                    break
         data = _coerce(raw)
         if set(raw) != set(DEFAULTS):
             try:
@@ -257,25 +209,10 @@ def is_group_allowed(group_id: str) -> bool:
     return bool(group_id) and group_id in all_config().get('allowed_groups', [])
 
 
-def targets() -> list:
-    """全部上传目标 (即全部可用子指令)。"""
-    return all_config().get('targets', [])
-
-
-def find_target(name: str) -> dict | None:
-    """按子指令名或别名查目标 (大小写不敏感); 不存在返回 None。"""
-    key = str(name or '').strip().lower()
-    if not key:
-        return None
-    for t in targets():
-        if key == t['key'] or key in t['aliases']:
-            return t
-    return None
-
-
-def target_names() -> str:
-    """帮助/报错里用的可用子指令列表文案。"""
-    return '、'.join(t['key'] for t in targets()) or '（未配置）'
+def upload_target() -> dict:
+    """/upload 的唯一落地目标 (lgtbot 目录), 供 deploy 的路径校验与备份分组使用。"""
+    return {'key': 'lgtbot', 'aliases': [], 'desc': '',
+            'path': str(all_config().get('upload_dir') or '').strip()}
 
 
 def public_config() -> dict:

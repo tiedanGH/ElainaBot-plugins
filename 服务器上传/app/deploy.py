@@ -1,12 +1,13 @@
-"""审核通过后把文件落到上传目标目录。
+"""审核通过后把文件落到 lgtbot 上传目录。
 
-两种落地方式, 对应两种子指令用法:
-  · 压缩包  ``/server <target>``            → 解压到 ``<target.path>/<压缩包名>/``
-  · 单文件  ``/server <target> <文件夹名>``  → 写入 ``<target.path>/<文件夹名>/<文件名>``
+两种落地方式, 对应两种指令用法:
+  · 压缩包  ``/upload``            → 解压到 ``<上传目录>/<压缩包名>/``
+  · 单文件  ``/upload <文件夹名>``  → 写入 ``<上传目录>/<文件夹名>/<文件名>``
 
-同名目录 / 同名文件一律**直接替换** (不需要 force 参数); 替换前旧内容按配置
-备份到 ``data/backups/<target.key>/``。目标路径先经名称合法性校验, 落地前再用
-realpath 确认没有跳出 ``target.path``, 防止靠构造压缩包名 / 文件夹名穿越目录。
+同名目录 / 同名文件一律**直接替换**; 替换前旧内容按配置备份到
+``data/backups/<target.key>/`` (target 由 config.upload_target() 构造, key 固定
+lgtbot)。目标路径先经名称合法性校验, 落地前再用 realpath 确认没有跳出上传目录,
+防止靠构造压缩包名 / 文件夹名穿越目录。
 """
 
 from __future__ import annotations
@@ -45,14 +46,15 @@ def bad_name(name: str) -> str:
 
 
 def check_target(target: dict) -> str:
-    """校验目标路径配置; 返回错误信息, 空串表示可用。"""
+    """校验上传目录配置; 返回错误信息, 空串表示可用。"""
+    key = (target or {}).get('key') or '上传'
     path = (target or {}).get('path') or ''
     if not path:
-        return f'目标「{(target or {}).get("key", "")}」未配置服务器路径, 请在后台面板填写'
+        return f'{key} 上传目录未配置, 请在后台面板「服务器上传」页填写'
     if not os.path.isabs(path):
-        return f'目标路径必须是绝对路径: {path}'
+        return f'{key} 上传目录必须是绝对路径: {path}'
     if not os.path.isdir(path):
-        return f'目标路径不存在或不是目录: {path}'
+        return f'{key} 上传目录不存在或不是目录: {path}'
     return ''
 
 
