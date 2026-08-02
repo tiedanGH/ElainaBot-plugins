@@ -34,6 +34,7 @@ import time
 from core.base.logger import PLUGIN, get_logger, report_error
 
 from . import archive, config, deploy, quoted, review, store
+from . import compile as compilemod
 
 log = get_logger(PLUGIN, '服务器上传')
 
@@ -68,6 +69,8 @@ def usage() -> str:
     if required:
         lines.append('🔸压缩包必须包含: ' + '、'.join(required))
     lines.append('🔸rule.md 需注明游戏原型出处')
+    lines.append('🔸新游戏上传成功后目录自动绑定上传者, 此后仅绑定用户可更新该目录')
+    lines.append('🔸审核通过后自动请求编译并回报结果')
     return '\n'.join(lines)
 
 
@@ -160,6 +163,23 @@ async def handle(event, argline: str, force: bool = False) -> bool:
             await _send(event, f'❌ 压缩包{base_err}')
             return False
 
+    # 目录更新权限: 已存在的目录仅绑定用户可更新 (force 由主人发起, 不受限);
+    # 未通过权限校验的请求直接拒绝, **不进入审核流程**。
+    game = folder if folder else deploy.strip_archive_ext(fname)
+    exists = os.path.isdir(os.path.join(target['path'], game))
+    if exists and not force:
+        owner = store.perm_get(game)
+        if owner is None:
+            await _send(event, f'❌ 权限不足: 目录「{game}」尚未绑定更新权限\n'
+                               '已有游戏目录仅绑定用户可更新, 请联系管理员在后台「权限管理」页绑定')
+            return False
+        if owner.get('user_id') != (event.user_id or ''):
+            shown = owner.get('username') or (owner.get('user_id') or '')[:8] + '…'
+            await _send(event, f'❌ 权限不足: 目录「{game}」已绑定给 {shown}\n'
+                               '仅绑定用户可更新该目录, 如需变更请联系管理员')
+            return False
+    is_new = (not folder) and not exists
+
     # 以下判定 → 置位 → 建任务之间不能有 await, 否则并发指令会一起受理
     global _busy
     if _busy:
@@ -167,7 +187,7 @@ async def handle(event, argline: str, force: bool = False) -> bool:
         return False
     _busy = True
     try:
-        _spawn(_run(event, cfg, ref, target, folder, force))
+        _spawn(_run(event, cfg, ref, target, folder, force, is_new))
     except Exception:
         _busy = False
         raise
@@ -193,11 +213,15 @@ def cancel_all():
 
 # ==================== 流程 ====================
 
-async def _run(event, cfg: dict, ref: dict, target: dict, folder: str, force: bool = False):
+async def _run(event, cfg: dict, ref: dict, target: dict, folder: str,
+               force: bool = False, is_new: bool = False):
     global _busy
     rid = store.new_record_id()
     record = {
         'forced': force,
+        'is_new': is_new,
+        'perm_bound': False,
+        'compile': {},
         'id': rid,
         'time': time.strftime('%Y-%m-%d %H:%M:%S'),
         'group_id': event.group_id or '',
@@ -458,13 +482,17 @@ async def _finish_reject(event, cfg: dict, record: dict, result: dict):
 _DEPLOY_HEAD = {
     '': '✅ 审核通过, 已上传到服务器',
     'config': '✅ 已上传到服务器\n⚠️ 审核功能已关闭',
-    'force': '✅ 已强制上传到服务器\n⚠️ 文件未经内容审核)',
+    'force': '✅ 已强制上传到服务器\n⚠️ 文件未经内容审核',
 }
 _DEPLOY_FAIL_HEAD = {
     '': '⚠️ 审核通过, 但上传失败, 需人工处理',
     'config': '⚠️ 上传失败, 需人工处理',
     'force': '⚠️ 强制上传失败, 需人工处理',
 }
+
+# record['compile'] 只存解析后的字段; raw / 完整 log_tail 落留档 (append_review_text)
+_COMPILE_RECORD_KEYS = ('status', 'ok', 'error', 'http_status', 'elapsed_sec',
+                        'active_matches', 'returncode', 'terminate')
 
 
 async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: str,
@@ -492,7 +520,17 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
 
     record.update(stage='deployed', dest=res['dest'], deploy_name=res['name'],
                   backup=res['backup'])
-    _persist(record)
+    game = folder if folder else res['name']
+
+    # 新游戏绑定目录权限: 必须审核通过 (force/关闭审核不绑定), 编译成败不影响
+    if record.get('is_new') and record.get('verdict') == 'pass':
+        try:
+            store.perm_set(game, record['user_id'], record['username'])
+            record['perm_bound'] = True
+        except OSError as e:
+            log.warning(f'目录权限绑定失败: {e}')
+
+    # ---- 部署结果消息 (含「已请求编译」提示) ----
     head = _DEPLOY_HEAD.get(skip_reason, _DEPLOY_HEAD[''])
     lines = [head, f'📦 文件: {fname} ({_size_mb(record["size"])})']
     if folder:
@@ -500,10 +538,82 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
     else:
         lines.append(f'📂 目录: {record["target"]} / {res["name"]}/  '
                      f'({record.get("file_count", 0)} 个文件){res["note"]}')
-    lines.append(f'🆔 记录: {record["id"]}')
     if res['backup']:
         lines.append(f'♻️ 旧内容已备份: {os.path.basename(res["backup"])}')
-    at = _mentions(cfg, record)
-    if at:
-        lines.append(at + ' 已完成上传')
+    if record.get('perm_bound'):
+        lines.append(f'🔗 目录权限已绑定: {record["username"] or record["user_id"]}')
+    lines.append(f'🆔 记录: {record["id"]}')
+
+    if not cfg.get('compile_enabled', True):
+        # 未启用自动编译: 保持旧行为收尾 (通知部署人员), 记录标记 disabled
+        record['compile'] = {'status': 'disabled', 'ok': False, 'error': '自动编译未启用'}
+        store.append_review_text(record['id'], '## 编译结果\n- 状态: 未启用自动编译')
+        _persist(record)
+        lines.append('🔧 自动编译未启用, 需手动编译后生效')
+        at = _mentions(cfg, record)
+        if at:
+            lines.append(at + ' 已完成上传')
+        return await _send(event, '\n'.join(lines))
+
+    lines.append('🔧 已请求编译, 编译可能较慢, 请耐心等待结果…')
     await _send(event, '\n'.join(lines))
+
+    # ---- 请求编译 (客户端超时自动取消) 并落记录/留档 ----
+    result = await compilemod.request_compile(game, cfg)
+    record['compile'] = {k: result.get(k) for k in _COMPILE_RECORD_KEYS}
+    store.append_review_text(record['id'], '## 编译结果\n' + compilemod.describe(result))
+    _persist(record)
+    await _send(event, _compile_text(cfg, record, result, game))
+
+
+def _compile_text(cfg: dict, record: dict, result: dict, game: str) -> str:
+    """编译结果消息。
+
+    @ 规则 (force 一律不 @):
+      · 编译成功 + 常规更新 → 只 @ 上传者 (热更新提示), 完全不 @ 开发者
+      · 编译成功 + 新游戏   → @ 上传者 (需等重启) + @ 开发者 (安排重启)
+      · 编译失败 / 超时 / 异常 → @ 开发者复查排查
+    """
+    at_dev = _mentions(cfg, record)
+    uploader = f'<@{record["user_id"]}>' if record.get('user_id') else ''
+    st = result.get('status')
+
+    if st == 'success':
+        elapsed = result.get('elapsed_sec')
+        lines = [f'✅ 编译成功' + (f' (用时 {elapsed}s)' if elapsed is not None else '')]
+        if record.get('is_new'):
+            if result.get('active_matches') is not None:
+                lines.append(f'🎲 当前剩余对局: {result["active_matches"]} '
+                             '(重启需等待剩余对局结束)')
+            lines.append(f'{uploader} 新游戏「{game}」需等待 bot 重启后才能实装, 请耐心等待')
+            if at_dev:
+                lines.append(at_dev + ' 新游戏已就绪, 请安排重启更新')
+        else:
+            lines.append(f'{uploader} 游戏「{game}」已自动热更新, 重新开局即可生效;'
+                         '\n游戏规则与成就的修改需等待 bot 重启后生效')
+        return '\n'.join(lines)
+
+    if st == 'timeout':
+        wait = int(cfg.get('compile_timeout') or 180)
+        term = result.get('terminate') or {}
+        lines = [
+            f'⚠️ 编译 {wait} 秒超时无响应, 已自动取消'
+            + ('' if term.get('ok') else ' (取消请求未确认, 请到编译面板检查)'),
+            f'🆔 记录: {record["id"]}',
+        ]
+        if at_dev:
+            lines.append(at_dev + ' 请复查编译问题')
+        return '\n'.join(lines)
+
+    if st == 'disabled':
+        return '🔧 自动编译未启用, 需手动编译后生效'
+
+    rc = result.get('returncode')
+    lines = [
+        '❌ 编译失败' + (f' (退出码 {rc})' if rc is not None else '') + ', 需人工排查',
+        f'🆔 记录: {record["id"]}',
+        '📄 编译日志与 API 返回已留档, 请在后台「服务器上传」页查看',
+    ]
+    if at_dev:
+        lines.append(at_dev + ' 请复查编译问题')
+    return '\n'.join(lines)

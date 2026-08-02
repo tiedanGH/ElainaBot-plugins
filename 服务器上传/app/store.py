@@ -21,6 +21,7 @@ import time
 from .config import DATA_DIR
 
 RECORDS_FILE = os.path.join(DATA_DIR, 'records.jsonl')
+PERMS_FILE = os.path.join(DATA_DIR, 'permissions.json')
 REVIEWS_DIR = os.path.join(DATA_DIR, 'reviews')
 ARCHIVES_DIR = os.path.join(DATA_DIR, 'archives')
 STAGING_DIR = os.path.join(DATA_DIR, 'staging')
@@ -137,6 +138,73 @@ def get_review_text(rid: str) -> str:
             return f.read()
     except OSError:
         return ''
+
+
+def append_review_text(rid: str, text: str):
+    """向已有留档追加一段 (编译结果等后到的信息)。"""
+    path = os.path.join(REVIEWS_DIR, f'{rid}.md')
+    try:
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write('\n\n' + (text or '').rstrip() + '\n')
+    except OSError:
+        pass
+
+
+# ==================== 目录更新权限 ====================
+# permissions.json: {folder: {user_id, username, time}} — 新游戏上传成功时自动
+# 绑定上传者, 此后仅绑定用户可更新该目录 (force 除外); 面板可增删改。
+
+def _load_perms() -> dict:
+    if not os.path.isfile(PERMS_FILE):
+        return {}
+    try:
+        with open(PERMS_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_perms(data: dict):
+    init()
+    tmp = PERMS_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, PERMS_FILE)
+
+
+def perm_get(folder: str) -> dict | None:
+    """某目录的绑定信息 {user_id, username, time}; 未绑定返回 None。"""
+    item = _load_perms().get(str(folder or ''))
+    return dict(item) if isinstance(item, dict) else None
+
+
+def perm_set(folder: str, user_id: str, username: str = '') -> dict:
+    """绑定/改绑目录到用户 (面板「增/改」与新游戏自动绑定共用)。"""
+    folder = str(folder or '').strip()
+    data = _load_perms()
+    data[folder] = {
+        'user_id': str(user_id or '').strip(),
+        'username': str(username or '').strip(),
+        'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    _save_perms(data)
+    return dict(data[folder])
+
+
+def perm_delete(folder: str) -> bool:
+    data = _load_perms()
+    if str(folder or '') not in data:
+        return False
+    del data[str(folder)]
+    _save_perms(data)
+    return True
+
+
+def perm_list() -> list:
+    """全部绑定 [{folder, user_id, username, time}], 按目录名排序。"""
+    return [{'folder': k, **v} for k, v in sorted(_load_perms().items())
+            if isinstance(v, dict)]
 
 
 def save_archive(rid: str, filename: str, data: bytes) -> str:

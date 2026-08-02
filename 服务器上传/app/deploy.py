@@ -75,6 +75,12 @@ def _stash(src: str, target: dict, cfg: dict, rel: str) -> str:
             os.remove(src)
         return ''
     dest = os.path.join(_backup_dir(target), f'{rel}.{time.strftime("%Y%m%d-%H%M%S")}')
+    # 时间戳只有秒级: 同一秒内两次替换同一目标会撞名, shutil.move 会把新备份
+    # 塞进旧备份目录里 (或直接报错), 撞名时追加序号保证路径唯一
+    base, i = dest, 1
+    while os.path.exists(dest):
+        dest = f'{base}-{i}'
+        i += 1
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     shutil.move(src, dest)
     return dest

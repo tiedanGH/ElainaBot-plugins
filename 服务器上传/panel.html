@@ -78,7 +78,7 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
 #toast{position:fixed;left:50%;bottom:30px;transform:translate(-50%,8px);opacity:0;pointer-events:none;z-index:60;background:rgba(0,0,0,.82);color:#fff;padding:10px 18px;border-radius:10px;font-size:12px;transition:.2s}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 .spin{width:13px;height:13px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;opacity:.72;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
-@media(max-width:820px){.wrap{padding:24px 16px 40px}.stats{grid-template-columns:repeat(2,1fr);gap:10px}.grid2,.grid4{grid-template-columns:1fr}.hero{flex-direction:column;align-items:flex-start}.card{padding:18px}.kv{grid-template-columns:1fr}}
+@media(max-width:820px){.wrap{padding:24px 16px 40px}.stats{grid-template-columns:repeat(2,1fr);gap:10px}.grid2,.grid4{grid-template-columns:1fr}.hero{flex-direction:column;align-items:flex-start}.card{padding:18px}.kv{grid-template-columns:1fr}#perm-grid{grid-template-columns:1fr !important}}
 </style>
 </head>
 <body>
@@ -101,6 +101,7 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
   <div class="tabs">
     <button class="tab on" data-tab="cfg" onclick="switchTab('cfg')">配置</button>
     <button class="tab" data-tab="rec" onclick="switchTab('rec')">审核记录</button>
+    <button class="tab" data-tab="perm" onclick="switchTab('perm')">权限管理</button>
     <button class="tab" data-tab="file" onclick="switchTab('file')">数据文件</button>
   </div>
 
@@ -179,6 +180,30 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
     </div>
 
     <div class="card">
+      <h3>编译接口 <span class="hint">对接 LGTBot_ElainaBot 编译 API（<code>/api/ext/lgtbot/build/compile</code>），token 在 LGTBot 面板「引擎编译」页一键复制</span></h3>
+      <div class="row">
+        <div class="field" style="flex:2">
+          <label>编译 API 地址（留空 = 自动指向本机框架端口）</label>
+          <input id="compile_url" class="mono" placeholder="http://127.0.0.1:5200">
+        </div>
+        <div class="field" style="flex:2">
+          <label>编译密钥 compile_key <span class="hint" id="compile-key-state"></span></label>
+          <input id="compile_key" type="password" placeholder="留空表示不修改">
+        </div>
+        <div class="field" style="max-width:150px"><label>等待超时(秒)</label><input id="compile_timeout" type="number" min="30" max="590" step="10"></div>
+      </div>
+      <div class="grid2" style="margin-top:14px">
+        <label class="switch"><input type="checkbox" id="compile_enabled"> 部署成功后自动请求编译</label>
+      </div>
+      <div class="hint" style="margin-top:10px">
+        审核通过并部署后按游戏名请求单目标增量编译（同步等待）；等待超过设定秒数自动发送取消请求并 @ 开发者复查。<br>
+        编译成功的<b>常规更新</b>只提示上传者已热更新（重新开局生效，规则/成就需等重启），完全不 @ 开发者；
+        <b>新游戏</b>则提示上传者等待重启实装、显示 API 返回的剩余对局数，并 @ 开发者安排重启。<br>
+        编译失败 / 超时 / 异常才 @ 开发者排查；编译结果与 API 返回解析写入审核记录与留档。
+      </div>
+    </div>
+
+    <div class="card">
       <h3>限额与完整性 <span class="hint">上传者是普通群成员，压缩包按不可信输入处理</span></h3>
       <div class="grid4">
         <div class="field"><label>压缩包上限(MB)</label><input id="max_archive_mb" type="number" min="1" max="2048"></div>
@@ -215,6 +240,35 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
     </div>
   </div>
 
+  <!-- ==================== 权限管理 ==================== -->
+  <div id="tab-perm" style="display:none">
+    <div class="card">
+      <h3>目录更新权限 <span class="hint">新游戏上传成功后自动绑定上传者；已有目录仅绑定用户可更新（主人 force 不受限）</span>
+        <span style="margin-left:auto"><button class="btn btn-sm" onclick="loadPerms()">刷新</button></span>
+      </h3>
+      <div class="row" style="margin-bottom:16px">
+        <div class="field" style="max-width:220px;min-width:150px">
+          <label>游戏目录名</label>
+          <input id="perm_folder" class="mono" placeholder="gomoku">
+        </div>
+        <div class="field" style="flex:2;min-width:220px">
+          <label>用户 openid</label>
+          <input id="perm_user" class="mono" placeholder="用户 user_id">
+        </div>
+        <div class="field" style="flex:1;min-width:130px">
+          <label>用户名称（识别用）</label>
+          <input id="perm_name" placeholder="昵称备注">
+        </div>
+        <button class="btn btn-accent" onclick="savePerm()">保存绑定</button>
+        <button class="btn btn-soft" onclick="clearPermForm()">清空</button>
+      </div>
+      <div class="hint" style="margin-bottom:12px">
+        保存时按目录名匹配：目录已有绑定则覆盖（改绑），没有则新增。删除绑定后该目录任何人都无法更新（主人 force 除外），直到重新绑定。
+      </div>
+      <div id="perm-grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px"></div>
+    </div>
+  </div>
+
   <!-- ==================== 数据文件 ==================== -->
   <div id="tab-file" style="display:none">
     <div class="card">
@@ -244,9 +298,9 @@ const TOKEN=new URLSearchParams(location.search).get('token')||'';
 const baseMatch=location.pathname.match(/^(.*)\/api\/web-pages\//);
 const API=(baseMatch?baseMatch[1]:'')+'/api/ext/svrupload';
 
-const BOOLS=['enabled','keep_replaced_backup','review_enabled','keep_archive'];
-const NUMS=['temperature','request_timeout','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget'];
-const TEXTS=['upload_dir','base_url','model','review_prompt'];
+const BOOLS=['enabled','keep_replaced_backup','review_enabled','keep_archive','compile_enabled'];
+const NUMS=['temperature','request_timeout','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget','compile_timeout'];
+const TEXTS=['upload_dir','base_url','model','review_prompt','compile_url'];
 const LISTS=['allowed_groups','notify_users','required_files'];
 const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',integrity:'包不完整',review:'审核',deploy:'部署失败',deployed:'已上传',error:'异常',cancelled:'已取消'};
 
@@ -271,9 +325,10 @@ async function api(path,method='GET',body){
 }
 
 function switchTab(name){
-  ['cfg','rec','file'].forEach(t=>{$('tab-'+t).style.display=t===name?'':'none'});
+  ['cfg','rec','perm','file'].forEach(t=>{$('tab-'+t).style.display=t===name?'':'none'});
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
   if(name==='rec')loadRecords();
+  if(name==='perm')loadPerms();
   if(name==='file')loadFiles();
 }
 
@@ -285,6 +340,8 @@ function renderConfig(){
   $('api_key').value='';
   const src=CFG.api_key_source;
   $('key-state').textContent=src==='plugin'?'（已在本插件配置）':src==='inherit'?'（继承框架 ai 配置）':'（未配置）';
+  $('compile_key').value='';
+  $('compile-key-state').textContent=CFG.compile_key_set?'（已配置）':'（未配置）';
   const ready=CFG.enabled&&CFG.api_key_set&&(CFG.allowed_groups||[]).length&&CFG.upload_dir;
   $('state-badge').textContent=ready?'配置就绪':'配置未完成';
   $('state-badge').style.color=ready?'':'var(--warn)';
@@ -302,6 +359,8 @@ function collect(){
   LISTS.forEach(k=>body[k]=$(k).value.split(/[\s,，]+/).map(s=>s.trim()).filter(Boolean));
   const key=$('api_key').value.trim();
   if(key)body.api_key=key;
+  const ckey=$('compile_key').value.trim();
+  if(ckey)body.compile_key=ckey;
   return body;
 }
 async function saveConfig(){
@@ -343,6 +402,26 @@ function catText(rec){
   if(!cats.length)return rec.error?esc(String(rec.error).slice(0,60)):'-';
   return cats.map(c=>esc(LABELS[c]||c)).join('、');
 }
+const COMPILE_LABEL={success:'编译✓',failed:'编译✗',timeout:'编译超时',error:'编译异常',invalid:'目标名非法',disabled:'未启用编译'};
+function compilePill(rec){
+  const c=rec.compile||{},st=c.status;
+  if(!st)return '';
+  if(st==='success')return ' <span class="pill ok">编译✓</span>';
+  if(st==='disabled')return ' <span class="pill gray">未编译</span>';
+  if(st==='timeout')return ' <span class="pill man">编译超时</span>';
+  return ' <span class="pill no">'+esc(COMPILE_LABEL[st]||'编译✗')+'</span>';
+}
+function compileText(c){
+  if(!c||!c.status)return '-';
+  const parts=[COMPILE_LABEL[c.status]||c.status];
+  if(c.http_status)parts.push('HTTP '+c.http_status);
+  if(c.elapsed_sec!=null)parts.push('用时 '+c.elapsed_sec+'s');
+  if(c.active_matches!=null)parts.push('剩余对局 '+c.active_matches);
+  if(c.returncode!=null)parts.push('退出码 '+c.returncode);
+  if(c.terminate)parts.push('取消'+(c.terminate.ok?'成功':'失败'));
+  if(c.error)parts.push(String(c.error).slice(0,120));
+  return parts.join(' · ');
+}
 async function loadRecords(){
   const r=await api('/records');
   if(!r.success)return toast('读取记录失败');
@@ -358,7 +437,7 @@ async function loadRecords(){
     <td class="mono">${esc(rec.target||'-')}${rec.folder?'/'+esc(rec.folder):''}
       <div class="hint">${rec.mode==='file'?'单文件':'压缩包'}</div></td>
     <td class="mono">${esc((rec.user_id||'').slice(0,10))}…</td>
-    <td>${verdictPill(rec)}</td>
+    <td>${verdictPill(rec)}${compilePill(rec)}${rec.is_new?' <span class="pill gray">新游戏</span>':''}</td>
     <td>${catText(rec)}</td>
     <td class="mono">${esc(rec.deploy_name||'-')}</td>
     <td class="mono">${esc(String(rec.elapsed??'-'))}s</td>
@@ -389,6 +468,8 @@ async function openRecord(id){
     ['阶段',STAGE_LABEL[rec.stage]||rec.stage],['结论',rec.verdict||'-'],
     ['未通过分类',(rec.categories||[]).map(c=>LABELS[c]||c).join('、')||'-'],
     ['需人工处理',rec.manual?'是':'否'],['模型',rec.model||'-'],['耗时',(rec.elapsed??'-')+'s'],
+    ['新游戏',rec.is_new?'是'+(rec.perm_bound?'（已绑定目录权限）':'（未绑定权限）'):'否'],
+    ['编译结果',compileText(rec.compile)],
     ['落地路径',rec.dest||'-'],['旧内容备份',rec.backup||'-'],
     ['压缩包留档',rec.archive_file||'-'],['审核留档',rec.review_file||'-'],
     ['错误',rec.error||'无'],
@@ -404,6 +485,53 @@ async function clearRecords(){
   const r=await api('/records/clear','POST',{});
   toast(r.success?`已清空 ${r.cleared} 条记录`:'清空失败');
   loadRecords();
+}
+
+/* ==================== 权限管理 ==================== */
+function renderPerms(perms){
+  if(!(perms||[]).length){
+    $('perm-grid').innerHTML='<div class="empty" style="grid-column:1/-1">暂无目录绑定；新游戏上传成功后会自动出现在这里</div>';
+    return;
+  }
+  $('perm-grid').innerHTML=perms.map(p=>`<div class="t-card" style="border:1px solid var(--border);border-radius:12px;background:var(--card2);padding:13px 15px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div style="font-weight:700;font-size:13.5px">📁 ${esc(p.folder)}</div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm" onclick="editPerm('${esc(p.folder)}')">改绑</button>
+        <button class="btn btn-sm btn-soft" onclick="delPerm('${esc(p.folder)}')">删除</button>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:7px">👤 ${esc(p.username||'（未记录名称）')}</div>
+    <div class="mono" style="margin-top:4px;color:var(--muted)">${esc(p.user_id||'')}</div>
+    <div class="hint" style="margin-top:4px">绑定时间: ${esc(p.time||'-')}</div>
+  </div>`).join('');
+}
+let PERMS=[];
+async function loadPerms(){
+  const r=await api('/perms');
+  if(!r.success)return toast(r.error||'读取权限失败');
+  PERMS=r.perms||[];renderPerms(PERMS);
+}
+function editPerm(folder){
+  const p=PERMS.find(x=>x.folder===folder);
+  if(!p)return;
+  $('perm_folder').value=p.folder;$('perm_user').value=p.user_id||'';$('perm_name').value=p.username||'';
+  $('perm_folder').focus();
+}
+function clearPermForm(){$('perm_folder').value='';$('perm_user').value='';$('perm_name').value=''}
+async function savePerm(){
+  const folder=$('perm_folder').value.trim(),user=$('perm_user').value.trim();
+  if(!folder)return toast('请填写目录名');
+  if(!user)return toast('请填写用户 openid');
+  const r=await api('/perms/save','POST',{folder,user_id:user,username:$('perm_name').value.trim()});
+  if(!r.success)return toast(r.error||'保存失败');
+  PERMS=r.perms||[];renderPerms(PERMS);clearPermForm();toast('已保存绑定');
+}
+async function delPerm(folder){
+  if(!confirm('删除目录「'+folder+'」的绑定？删除后该目录任何人都无法更新（主人 force 除外）。'))return;
+  const r=await api('/perms/delete','POST',{folder});
+  if(!r.success)return toast(r.error||'删除失败');
+  PERMS=r.perms||[];renderPerms(PERMS);toast('已删除绑定');
 }
 
 /* ==================== 数据文件 ==================== */

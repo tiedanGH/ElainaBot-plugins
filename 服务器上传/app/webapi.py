@@ -1,4 +1,4 @@
-"""Web 面板路由 /api/ext/svrupload/* — 配置、审核记录、数据文件浏览。
+"""Web 面板路由 /api/ext/svrupload/* — 配置、审核记录、目录权限、数据文件浏览。
 
 路由由框架 register_route 动态查表执行, 插件热重载即时生效, 卸载时框架自动
 注销, 无需手动清理。默认 auth=True: 请求需带后台登录 token。
@@ -9,7 +9,7 @@ from aiohttp import web
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.web_pages import register_route
 
-from . import config, review, store
+from . import config, deploy, review, store
 
 log = get_logger(PLUGIN, '服务器上传')
 
@@ -24,6 +24,9 @@ def register_routes():
     register_route('GET', PREFIX + '/records', _get_records)
     register_route('GET', PREFIX + '/record', _get_record)
     register_route('POST', PREFIX + '/records/clear', _clear_records)
+    register_route('GET', PREFIX + '/perms', _get_perms)
+    register_route('POST', PREFIX + '/perms/save', _save_perm)
+    register_route('POST', PREFIX + '/perms/delete', _delete_perm)
     register_route('GET', PREFIX + '/files', _get_files)
     register_route('GET', PREFIX + '/file', _get_file)
     register_route('POST', PREFIX + '/file/delete', _delete_file)
@@ -112,6 +115,34 @@ async def _get_record(request: web.Request):
 async def _clear_records(request: web.Request):
     n = store.clear_records()
     return web.json_response({'success': True, 'cleared': n})
+
+
+# ==================== 目录更新权限 ====================
+
+async def _get_perms(request: web.Request):
+    return web.json_response({'success': True, 'perms': store.perm_list()})
+
+
+async def _save_perm(request: web.Request):
+    """新增/修改绑定: {folder, user_id, username}。folder 名按部署同一套规则校验。"""
+    body = await _json(request)
+    folder = str(body.get('folder') or '').strip()
+    user_id = str(body.get('user_id') or '').strip()
+    err = deploy.bad_name(folder) if folder else '目录名为空'
+    if err:
+        return web.json_response({'success': False, 'error': f'目录{err}'})
+    if not user_id:
+        return web.json_response({'success': False, 'error': '用户 openid 为空'})
+    store.perm_set(folder, user_id, str(body.get('username') or ''))
+    return web.json_response({'success': True, 'perms': store.perm_list()})
+
+
+async def _delete_perm(request: web.Request):
+    body = await _json(request)
+    ok = store.perm_delete(str(body.get('folder') or '').strip())
+    if not ok:
+        return web.json_response({'success': False, 'error': '该目录没有绑定记录'})
+    return web.json_response({'success': True, 'perms': store.perm_list()})
 
 
 # ==================== 数据文件 ====================

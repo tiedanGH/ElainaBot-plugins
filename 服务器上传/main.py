@@ -25,8 +25,17 @@
 achievements.h / board.h / icon.png / mygame.cc / option.cmake / options.h /
 rule.md / unittest.cc), 可以多出其他文件, 缺少任一项即拒绝并汇报缺少哪些。
 
-配置与记录: 后台侧边栏「服务器上传」页 (上传目录 / 密钥 / 群聊 / 通知人员 /
-审核记录 / 数据文件浏览)。
+自动编译 (app/compile.py): 部署成功后按游戏名请求 LGTBot_ElainaBot 的编译 API,
+超时 (默认 180s) 自动发送取消请求; 编译成功的常规更新只提示上传者已热更新
+(完全不 @ 开发者), 新游戏则 @ 上传者等待重启 + @ 开发者安排重启并显示剩余
+对局数; 编译失败/超时 @ 开发者复查。编译结果 (含 API 返回解析) 进审核记录与留档。
+
+目录更新权限 (data/permissions.json): 新游戏上传成功 (审核通过, 编译成败不限)
+自动把目录绑定给上传者, 此后仅绑定用户可更新该目录, 其他用户直接报权限不足且
+不进审核; force 不受限也不触发绑定。面板「权限管理」页可增删改。
+
+配置与记录: 后台侧边栏「服务器上传」页 (上传目录 / 审核密钥 / 编译密钥 / 群聊 /
+通知人员 / 审核记录 / 权限管理 / 数据文件浏览)。
 """
 
 import os
@@ -40,8 +49,8 @@ from .app import config, flow, store, webapi
 __plugin_meta__ = {
     'name': '服务器上传',
     'author': 'ElainaBot',
-    'description': '/upload 引用群文件上传到 lgtbot 目录, 自动内容审核后落地',
-    'version': '1.2.0',
+    'description': '/upload 引用群文件上传到 lgtbot 目录, 自动内容审核 + 请求编译 + 目录权限管理',
+    'version': '1.3.0',
 }
 
 log = get_logger(PLUGIN, '服务器上传')

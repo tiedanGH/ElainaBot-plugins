@@ -35,6 +35,11 @@ DEFAULTS = {
     # ---- 审核 (仅文字: 图片/字体等二进制资源不送审) ----
     'review_enabled': True,      # 关闭后不做内容审核, 直接部署 (仅用于上游故障应急)
     'review_prompt': '',         # 追加到内置审核标准之后的自定义要求
+    # ---- 编译 (对接 LGTBot_ElainaBot 的编译 API) ----
+    'compile_enabled': True,     # 部署成功后自动请求编译
+    'compile_url': '',           # 编译 API 地址, 留空 = 自动指向本机框架端口
+    'compile_key': '',           # 编译 API token (LGTBot 面板「引擎编译」页复制)
+    'compile_timeout': 180,      # 等待编译响应的秒数, 超时自动发送取消请求
     # ---- 模型接口 (OpenAI 兼容) ----
     'base_url': 'https://api.ytea.top/v1',
     'api_key': '',
@@ -62,6 +67,10 @@ _COMMENTS = {
     'keep_archive': '是否把原压缩包留档到 data/archives',
     'review_enabled': '是否启用内容审核 (关闭后直接部署)',
     'review_prompt': '追加到内置审核标准之后的自定义要求',
+    'compile_enabled': '部署成功后是否自动请求 LGTBot 编译 API',
+    'compile_url': '编译 API 地址, 留空 = 自动指向本机框架端口',
+    'compile_key': '编译 API token (LGTBot 面板「引擎编译」页复制)',
+    'compile_timeout': '等待编译响应的秒数, 超时自动取消编译',
     'base_url': 'OpenAI 兼容接口地址',
     'api_key': '接口密钥, 留空则回退 settings.yaml 的 ai.api_key / 环境变量',
     'model': '审核使用的模型',
@@ -78,9 +87,12 @@ _lock = threading.Lock()
 _cache: dict | None = None
 
 _INT_FIELDS = ('request_timeout', 'max_archive_mb', 'max_uncompressed_mb',
-               'max_files', 'text_budget', 'download_timeout')
-_BOOL_FIELDS = ('enabled', 'keep_replaced_backup', 'keep_archive', 'review_enabled')
+               'max_files', 'text_budget', 'download_timeout', 'compile_timeout')
+_BOOL_FIELDS = ('enabled', 'keep_replaced_backup', 'keep_archive', 'review_enabled',
+                'compile_enabled')
 _LIST_FIELDS = ('allowed_groups', 'notify_users', 'required_files')
+# 密钥语义字段: 面板提交空串 = 不修改, null = 清除
+_SECRET_FIELDS = ('api_key', 'compile_key')
 
 
 def _coerce(data: dict) -> dict:
@@ -167,7 +179,7 @@ def update(updates: dict) -> dict:
         for k, v in (updates or {}).items():
             if k not in WRITABLE:
                 continue
-            if k == 'api_key':
+            if k in _SECRET_FIELDS:
                 if v is None:
                     cur[k] = ''
                 elif isinstance(v, str) and v.strip():
@@ -222,5 +234,6 @@ def public_config() -> dict:
     data['api_key_set'] = bool(api_key())
     data['api_key_source'] = ('plugin' if all_config().get('api_key')
                               else ('inherit' if api_key() else 'none'))
+    data['compile_key_set'] = bool(data.pop('compile_key', ''))
     data['data_dir'] = DATA_DIR
     return data
