@@ -100,8 +100,8 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
 
   <div class="tabs">
     <button class="tab on" data-tab="cfg" onclick="switchTab('cfg')">配置</button>
-    <button class="tab" data-tab="rec" onclick="switchTab('rec')">审核记录</button>
     <button class="tab" data-tab="perm" onclick="switchTab('perm')">权限管理</button>
+    <button class="tab" data-tab="rec" onclick="switchTab('rec')">审核记录</button>
     <button class="tab" data-tab="file" onclick="switchTab('file')">数据文件</button>
   </div>
 
@@ -501,8 +501,7 @@ function renderPerms(perms){
         <button class="btn btn-sm btn-soft" onclick="delPerm('${esc(p.folder)}')">删除</button>
       </div>
     </div>
-    <div class="hint" style="margin-top:7px">👤 ${esc(p.username||'（未记录名称）')}</div>
-    <div class="mono" style="margin-top:4px;color:var(--muted)">${esc(p.user_id||'')}</div>
+    <div class="mono" style="margin-top:7px;color:var(--text2)">👤 ${esc(p.user_id||'')} | ${esc(p.username||'（未记录名称）')}</div>
     <div class="hint" style="margin-top:4px">绑定时间: ${esc(p.time||'-')}</div>
   </div>`).join('');
 }
