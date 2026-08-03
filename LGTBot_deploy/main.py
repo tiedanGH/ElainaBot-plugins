@@ -30,6 +30,11 @@ rule.md / unittest.cc), 可以多出其他文件, 缺少任一项即拒绝并汇
 (完全不 @ 开发者), 新游戏则 @ 上传者等待重启 + @ 开发者安排重启并显示剩余
 对局数; 编译失败/超时 @ 开发者复查。编译结果 (含 API 返回解析) 进审核记录与留档。
 
+送审前对上传内容做提示词注入防御 (五层, 详见 app/review.py 模块 docstring): 信道中和 +
+nonce 定界 + 隔离声明 + pass 强制 nonce 回显 + 确定性预扫描 (命中即不送审直接拒绝)。
+审核结果附带 mygame.cc 的 k_properties 游戏名称/描述: 名称显示在通过与编译提示里
+(如「情书(love_letter)」), 描述只进审核留档。
+
 目录更新权限 (data/permissions.json): 新游戏上传成功 (审核通过, 编译成败不限)
 自动把目录绑定给上传者, 此后仅绑定用户可更新该目录, 其他用户直接报权限不足且
 不进审核; force 不受限也不触发绑定。面板「权限管理」页可增删改。
@@ -50,7 +55,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 自动部署',
     'author': 'ElainaBot',
     'description': '/upload 引用群文件上传到 lgtbot 目录, 自动内容审核 + 请求编译 + 目录权限管理',
-    'version': '1.3.5',
+    'version': '1.4.0',
 }
 
 log = get_logger(PLUGIN, 'LGTBot_deploy')

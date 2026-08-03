@@ -175,6 +175,9 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
         为疑似违规，同样不通过并标记「需人工复核」。未通过时群内只输出分类与位置（文件:行号），不输出违规内容。<br>
         版权<b>仅依据文字内容</b>判断（长段抄袭文本、文字中声明的未授权素材等）；图片、字体等二进制资源不审查，
         <b>来源未知不构成拒绝理由</b>。<br>
+        <b>提示词注入防御</b>：送审前中和代码围栏/聊天模板/结构标记，用一次性 nonce 定界文件内容并要求通过判定回显该 nonce（缺失即降级人工）；
+        另有确定性预扫描——命中注入特征直接判不通过且<b>完全不请求模型</b>，分类显示为「提示词注入」。<br>
+        审核结果会从 <code>mygame.cc</code> 的 <code>k_properties</code> 取游戏名称与描述：名称显示在通过与编译提示里，描述只进审核留档。<br>
         主人可用 <code>/upload force [文件夹名]</code>（force 可简写 <code>f</code>）跳过内容审核直传，
         压缩包成员名校验、体积限额、必需文件清单、落地路径越界校验仍然照做，记录里会标记「强制」，完成后不 @ 通知部署人员。
       </div>
@@ -459,6 +462,7 @@ async function openRecord(id){
     ['提交者',(rec.username||'')+' '+(rec.user_id||'')],['文件',rec.filename],
     ['上传模式',(rec.mode==='file'?'单文件增量':'压缩包')+(rec.forced?'（主人强制上传，跳过审核）':'')],
     ['审查标准',(rec.criteria||[]).map(c=>LABELS[c]||c).join('、')||'-'],
+    ['游戏名称',rec.game_name||'-'],['游戏描述',rec.game_desc||'-'],
     ['违规位置',(rec.findings||[]).map(f=>{
       let label=LABELS[f.category]||f.category||'其他';if(f.suspect)label+='·疑似';
       return `[${label}] ${f.target||'?'}${f.line?':'+f.line:''}`;

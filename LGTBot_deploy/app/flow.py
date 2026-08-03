@@ -246,6 +246,8 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str,
         'model': '',
         'criteria': [],
         'findings': [],
+        'game_name': '',
+        'game_desc': '',
         'elapsed': 0.0,
         '_started': time.time(),
     }
@@ -344,8 +346,10 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
     if skip_reason:
         note = ('(主人强制上传, 本次未做内容审核)' if skip_reason == 'force'
                 else '(审核已在面板关闭, 本次未做内容审核)')
+        local_name, local_desc = review.parse_game_props(pkg)
         record.update(stage='review', verdict='force' if skip_reason == 'force' else 'skip',
-                      manual=False)
+                      manual=False, game_name=review._clean_display(local_name),
+                      game_desc=local_desc[:500])
         record['review_file'] = store.save_review_text(rid, note, header=_review_header(record))
         return await _finish_deploy(event, cfg, record, data, staging, info, target, folder,
                                     skip_reason=skip_reason)
@@ -355,7 +359,8 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
     result = await review.review(pkg, meta, cfg)
     record.update(stage='review', verdict=result['verdict'], categories=result['categories'],
                   manual=result['manual'], model=result['model'], error=result['error'],
-                  criteria=result.get('criteria') or [], findings=result.get('findings') or [])
+                  criteria=result.get('criteria') or [], findings=result.get('findings') or [],
+                  game_name=result.get('game_name') or '', game_desc=result.get('game_desc') or '')
     record['review_file'] = store.save_review_text(
         rid, result['raw'] or f'(无回复内容) 错误: {result["error"]}',
         header=_review_header(record, result))
@@ -383,6 +388,8 @@ def _review_header(record: dict, result: dict | None = None) -> str:
         + (f' / 文件夹 {record["folder"]}' if record['folder'] else ''),
         f'- 包内文件数: {record.get("file_count", 0)}',
         f'- rule 文件: {", ".join(record.get("rule_files") or []) or "无"}',
+        f'- 游戏名称: {record.get("game_name") or "（未取到）"}',
+        f'- 游戏描述: {record.get("game_desc") or "（未取到）"}',
     ]
     if result:
         lines += [
@@ -402,6 +409,16 @@ def _review_header(record: dict, result: dict | None = None) -> str:
 
 def _size_mb(n: int) -> str:
     return f'{(n or 0) / 1048576:.2f} MB'
+
+
+def _game_label(record: dict, game: str) -> str:
+    """群消息里的游戏标识: 有中文名则「中文名(目录名)」, 否则只用目录名。
+
+    中文名来自审核结果 (或本地解析 mygame.cc), 已在 review._clean_display 里去掉
+    换行与 ``<> 「」`` —— 不会被用来伪造 @ 或伪造多行消息。
+    """
+    name = (record.get('game_name') or '').strip()
+    return f'{name}({game})' if name else game
 
 
 def _where(record: dict) -> str:
@@ -540,6 +557,8 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
                      f'({record.get("file_count", 0)} 个文件){res["note"]}')
     if res['backup']:
         lines.append(f'♻️ 旧内容已备份: {os.path.basename(res["backup"])}')
+    if record.get('game_name'):
+        lines.append(f'🎮 游戏名称: {record["game_name"]}')
     if record.get('perm_bound'):
         lines.append(f'🔗 目录权限已绑定: {record["username"] or record["user_id"]}')
     lines.append(f'🆔 记录: {record["id"]}')
@@ -590,12 +609,13 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str) -> str:
             if result.get('active_matches') is not None:
                 lines.append(f'🎲 当前剩余对局: {result["active_matches"]} '
                              '(重启需等待剩余对局结束)')
-            lines.append(f'{uploader} 新游戏「{game}」需等待 bot 重启后才能实装, 请耐心等待')
+            lines.append(f'{uploader} 新游戏「{_game_label(record, game)}」'
+                         '需等待 bot 重启后才能实装, 请耐心等待')
             if at_dev:
                 lines.append(at_dev + ' 新游戏已就绪, 请安排重启更新')
         else:
-            lines.append(f'{uploader} 游戏「{game}」已自动热更新, 重新开局即可生效;'
-                         '\n游戏规则与成就的修改需等待 bot 重启后生效')
+            lines.append(f'{uploader} 游戏「{_game_label(record, game)}」已自动热更新, '
+                         '重新开局即可生效;\n游戏规则与成就的修改需等待 bot 重启后生效')
         return '\n'.join(lines)
 
     if st == 'timeout':
