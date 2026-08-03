@@ -196,7 +196,7 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
         <label class="switch"><input type="checkbox" id="compile_enabled"> 部署成功后自动请求编译</label>
       </div>
       <div class="hint" style="margin-top:10px">
-        审核通过并部署后按游戏名请求单目标增量编译（同步等待）；等待超过设定秒数自动发送取消请求并 @ 开发者复查。<br>
+        审核通过并部署后按游戏名请求单目标编译（同步等待）：新游戏自动附加 <code>new=true</code> 走完整编译（CMake 重新配置，耗时更长），老游戏更新不带该参数、走增量编译；等待超过设定秒数自动发送取消请求并 @ 开发者复查。<br>
         编译成功的<b>常规更新</b>只提示上传者已热更新（重新开局生效，规则/成就需等重启），完全不 @ 开发者；
         <b>新游戏</b>则提示上传者等待重启实装、显示 API 返回的剩余对局数，并 @ 开发者安排重启。<br>
         编译失败 / 超时 / 异常才 @ 开发者排查；编译结果与 API 返回解析写入审核记录与留档。
@@ -414,6 +414,7 @@ function compilePill(rec){
 function compileText(c){
   if(!c||!c.status)return '-';
   const parts=[COMPILE_LABEL[c.status]||c.status];
+  if(c.new)parts.push('新游戏完整编译');
   if(c.http_status)parts.push('HTTP '+c.http_status);
   if(c.elapsed_sec!=null)parts.push('用时 '+c.elapsed_sec+'s');
   if(c.active_matches!=null)parts.push('剩余对局 '+c.active_matches);

@@ -491,7 +491,7 @@ _DEPLOY_FAIL_HEAD = {
 }
 
 # record['compile'] 只存解析后的字段; raw / 完整 log_tail 落留档 (append_review_text)
-_COMPILE_RECORD_KEYS = ('status', 'ok', 'error', 'http_status', 'elapsed_sec',
+_COMPILE_RECORD_KEYS = ('status', 'ok', 'new', 'error', 'http_status', 'elapsed_sec',
                         'active_matches', 'returncode', 'terminate')
 
 
@@ -555,11 +555,16 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
             lines.append(at + ' 已完成上传')
         return await _send(event, '\n'.join(lines))
 
-    lines.append('🔧 已请求编译, 编译可能较慢, 请耐心等待结果…')
+    # 空行隔开部署详情与编译提示, 让「已请求编译」更醒目
+    lines.append('')
+    if record.get('is_new'):
+        lines.append('🔧 已请求编译 (新游戏完整编译, 耗时更长), 请耐心等待结果…')
+    else:
+        lines.append('🔧 已请求编译, 编译可能较慢, 请耐心等待结果…')
     await _send(event, '\n'.join(lines))
 
-    # ---- 请求编译 (客户端超时自动取消) 并落记录/留档 ----
-    result = await compilemod.request_compile(game, cfg)
+    # ---- 请求编译: 新游戏带 new=true 走完整编译, 老游戏更新走增量 ----
+    result = await compilemod.request_compile(game, cfg, is_new=bool(record.get('is_new')))
     record['compile'] = {k: result.get(k) for k in _COMPILE_RECORD_KEYS}
     store.append_review_text(record['id'], '## 编译结果\n' + compilemod.describe(result))
     _persist(record)

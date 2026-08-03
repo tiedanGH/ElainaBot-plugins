@@ -1,12 +1,15 @@
-"""LGTBot 编译 API 客户端 — 审核通过部署后自动请求单目标增量编译。
+"""LGTBot 编译 API 客户端 — 审核通过部署后自动请求单目标编译。
 
 对接主框架插件 LGTBot_ElainaBot 开放的编译 API
 (``plugins/LGTBot_ElainaBot/mod/webui/build_api.py``, 路由以 auth=False 注册,
 靠独立 token 认证; token 在 LGTBot 面板「引擎编译」标签有一键复制按钮):
 
-  · ``POST /api/ext/lgtbot/build/compile``   body ``{"target": "<游戏名>"}``
+  · ``POST /api/ext/lgtbot/build/compile``   body ``{"target": "<游戏名>", "new": bool}``
     同步等待编译结束才响应 (服务端自身等待上限 600s)。
     Header: ``Authorization: Bearer <token>`` (或 ``X-API-Token``)。
+    ``new=true`` 时 build.sh 不带 ``-i``, 走完整流程 (依赖自检 + CMake 重新
+    配置) —— 新增游戏目录只有重跑 configure 才进 CMake 缓存, 耗时更长;
+    缺省 / false 走增量编译 (秒级~分钟级)。**老游戏更新不带 new 参数**。
     - 200  {success: true, target, message, elapsed_sec, active_matches}
            elapsed_sec = 编译用时; active_matches = 进行中对局数 (重启需等它归零)
     - 400  缺 target / target 名非法 (仅字母/数字/下划线/连字符, 1-63 字符,
@@ -23,13 +26,14 @@
 编译, 返回 status='timeout'。所有结果归一为:
 
     {'status': 'success'|'failed'|'timeout'|'error'|'invalid'|'disabled',
-     'ok': bool, 'error': str, 'http_status': int, 'elapsed_sec': float|None,
-     'active_matches': int|None, 'returncode': int|None, 'log_tail': str,
-     'terminate': dict|None, 'raw': str}
+     'ok': bool, 'new': bool, 'error': str, 'http_status': int,
+     'elapsed_sec': float|None, 'active_matches': int|None,
+     'returncode': int|None, 'log_tail': str, 'terminate': dict|None, 'raw': str}
 
 status 含义: success=编译成功; failed=API 明确返回失败(含 4xx/5xx);
 timeout=等待超时已发取消; error=网络/未知异常; invalid=目标名不符合 API 白名单
-(含中文等, 不发请求); disabled=面板未启用自动编译。
+(含中文等, 不发请求); disabled=面板未启用自动编译。new 回显本次是否按新游戏
+完整编译。
 """
 
 from __future__ import annotations
@@ -71,9 +75,9 @@ def _headers(cfg: dict) -> dict:
 
 
 def _result(status: str, **kw) -> dict:
-    base = {'status': status, 'ok': status == 'success', 'error': '', 'http_status': 0,
-            'elapsed_sec': None, 'active_matches': None, 'returncode': None,
-            'log_tail': '', 'terminate': None, 'raw': ''}
+    base = {'status': status, 'ok': status == 'success', 'new': False, 'error': '',
+            'http_status': 0, 'elapsed_sec': None, 'active_matches': None,
+            'returncode': None, 'log_tail': '', 'terminate': None, 'raw': ''}
     base.update(kw)
     return base
 
@@ -97,22 +101,31 @@ async def terminate(cfg: dict) -> dict:
         return {'ok': False, 'status': 0, 'message': f'{type(e).__name__}: {e}'}
 
 
-async def request_compile(game: str, cfg: dict) -> dict:
-    """请求编译单个游戏目标并同步等待结果 (超时自动取消)。"""
+async def request_compile(game: str, cfg: dict, is_new: bool = False) -> dict:
+    """请求编译单个游戏目标并同步等待结果 (超时自动取消)。
+
+    ``is_new=True`` (新游戏, 目标目录此前不存在) 时请求体附加 ``new: true``,
+    API 走完整流程编译 (CMake 重新配置, 耗时更长); 老游戏更新不带 new 参数,
+    走增量编译。
+    """
+    is_new = bool(is_new)
     if not cfg.get('compile_enabled', True):
-        return _result('disabled', error='自动编译未启用')
+        return _result('disabled', new=is_new, error='自动编译未启用')
     if not _TARGET_RE.match(game or ''):
-        return _result('invalid',
+        return _result('invalid', new=is_new,
                        error=f'目标名「{game}」不符合编译 API 命名规则 '
                              '(仅字母/数字/下划线/连字符, 首字符为字母或下划线)')
 
     wait = max(5, int(cfg.get('compile_timeout') or 180))
     url = base_url(cfg) + _COMPILE_PATH
+    payload = {'target': game}
+    if is_new:
+        payload['new'] = True
     started = time.time()
     try:
         timeout = aiohttp.ClientTimeout(total=wait)
         async with aiohttp.ClientSession(timeout=timeout) as s, \
-                s.post(url, json={'target': game}, headers=_headers(cfg)) as resp:
+                s.post(url, json=payload, headers=_headers(cfg)) as resp:
             text = await resp.text()
             try:
                 data = json.loads(text)
@@ -120,26 +133,26 @@ async def request_compile(game: str, cfg: dict) -> dict:
                 data = {}
             raw = text[:4000]
             if resp.status == 200 and data.get('success'):
-                return _result('success', http_status=200,
+                return _result('success', new=is_new, http_status=200,
                                elapsed_sec=data.get('elapsed_sec'),
                                active_matches=data.get('active_matches'), raw=raw)
             if resp.status == 504:
                 # 服务端等待上限已到但进程仍在跑 — 与客户端超时同样处理: 取消
                 term = await terminate(cfg)
-                return _result('timeout', http_status=504, terminate=term,
+                return _result('timeout', new=is_new, http_status=504, terminate=term,
                                error=str(data.get('error') or '编译超时未结束'), raw=raw)
-            return _result('failed', http_status=resp.status,
+            return _result('failed', new=is_new, http_status=resp.status,
                            error=str(data.get('error') or f'HTTP {resp.status}: {text[:200]}'),
                            returncode=data.get('returncode'),
                            elapsed_sec=data.get('elapsed_sec'),
                            log_tail=str(data.get('log_tail') or ''), raw=raw)
     except (asyncio.TimeoutError, aiohttp.ServerTimeoutError):
         term = await terminate(cfg)
-        return _result('timeout', terminate=term,
+        return _result('timeout', new=is_new, terminate=term,
                        error=f'等待 {wait} 秒无响应, 已发送取消编译请求',
                        elapsed_sec=round(time.time() - started, 1))
     except Exception as e:  # noqa: BLE001
-        return _result('error', error=f'{type(e).__name__}: {e}')
+        return _result('error', new=is_new, error=f'{type(e).__name__}: {e}')
 
 
 # ==================== 展示辅助 ====================
@@ -161,6 +174,7 @@ def describe(result: dict) -> str:
         return '(无编译信息)'
     lines = [
         f'- 状态: {STATUS_LABELS.get(result.get("status"), result.get("status", ""))}',
+        f'- 编译模式: {"新游戏完整编译 (new=true)" if result.get("new") else "增量编译"}',
         f'- HTTP: {result.get("http_status") or "-"}',
     ]
     if result.get('elapsed_sec') is not None:
