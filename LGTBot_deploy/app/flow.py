@@ -1,4 +1,4 @@
-"""指令解析 + 上传流程编排: 取引用文件 → 下载 → 解压/校验 → 审核 → 部署 → 记录 → @通知。
+"""指令解析 + 上传流程编排: 取引用文件 → 下载 → 解压/校验 → 审核 → 部署 → 编译 → 记录 → @通知。
 
 指令形态 (唯一上传目录 lgtbot, 路径在面板配置):
     /upload                    引用压缩包消息 → 解压到 <上传目录>/<压缩包名>/
@@ -23,6 +23,9 @@ force 由主人本人发起, 完成后不再 @ 通知部署人员。
     (不占主动消息额度), 失败再退主动消息。
   · 任何一步失败都写记录 + 在群里给结论, 且**无论结果如何都 @ 部署人员**。
   · 同时只处理一个上传任务 (解压 / 审核都吃内存与带宽), 排队请求直接拒绝。
+  · 新游戏编译成功后自动请求 LGTBot 计划重启 (自动模式, 维护原因「新游戏《X》」),
+    请求成功即不再 @ 开发者 —— 对局清空后由 LGTBot 自行重启, 本插件不跟踪;
+    只有请求失败才 @ 开发者手动安排。老游戏更新走热更新, 不请求重启也不 @ 开发者。
 """
 
 from __future__ import annotations
@@ -222,6 +225,7 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str,
         'is_new': is_new,
         'perm_bound': False,
         'compile': {},
+        'restart': {},
         'id': rid,
         'time': time.strftime('%Y-%m-%d %H:%M:%S'),
         'group_id': event.group_id or '',
@@ -557,9 +561,12 @@ _DEPLOY_FAIL_HEAD = {
     'force': '⚠️ 强制上传失败, 需人工处理',
 }
 
-# record['compile'] 只存解析后的字段; raw / 完整 log_tail 落留档 (append_review_text)
+# record['compile'] / record['restart'] 只存解析后的字段;
+# raw / 完整 log_tail 落留档 (append_review_text)
 _COMPILE_RECORD_KEYS = ('status', 'ok', 'new', 'error', 'http_status', 'elapsed_sec',
                         'active_matches', 'returncode', 'terminate')
+_RESTART_RECORD_KEYS = ('status', 'ok', 'error', 'http_status', 'enabled', 'auto',
+                        'reason', 'active_matches', 'message')
 
 
 async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: str,
@@ -635,17 +642,59 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
     # ---- 请求编译: 新游戏带 new=true 走完整编译, 老游戏更新走增量 ----
     result = await compilemod.request_compile(game, cfg, is_new=bool(record.get('is_new')))
     record['compile'] = {k: result.get(k) for k in _COMPILE_RECORD_KEYS}
-    store.append_review_text(record['id'], '## 编译结果\n' + compilemod.describe(result))
+    notes = ['## 编译结果\n' + compilemod.describe(result)]
+
+    # ---- 新游戏编译成功 → 请求计划重启 (自动模式), 不再 @ 开发者安排重启 ----
+    # 老游戏更新走热更新, 不需要重启, 也就不请求。
+    restart = None
+    if result.get('ok') and record.get('is_new'):
+        restart = await compilemod.request_planned_restart(
+            cfg, f'新游戏《{_restart_game_name(record, game)}》')
+        record['restart'] = {k: restart.get(k) for k in _RESTART_RECORD_KEYS}
+        notes.append('## 计划重启请求\n' + compilemod.describe_restart(restart))
+    store.append_review_text(record['id'], '\n\n'.join(notes))
     _persist(record)
-    await _send(event, _compile_text(cfg, record, result, game))
+    await _send(event, _compile_text(cfg, record, result, game, restart))
 
 
-def _compile_text(cfg: dict, record: dict, result: dict, game: str) -> str:
+def _restart_game_name(record: dict, game: str) -> str:
+    """计划重启的维护原因里用的游戏名: 优先中文名, 取不到则用目录名 (英文名)。
+
+    与 ``_game_label`` 不同 —— 维护提示是给玩家看的, 不带目录名括号。
+    """
+    return (record.get('game_name') or '').strip() or game
+
+
+def _restart_lines(cfg: dict, record: dict, restart: dict | None) -> list:
+    """计划重启请求的结果提示。
+
+    只汇报请求结果, 不跟踪重启是否真的发生 (对局清空后由 LGTBot 自行触发)。
+    请求成功**不 @ 开发者**; 只有请求失败才需要人工安排重启。
+    """
+    if not restart:
+        return []
+    if restart.get('ok'):
+        left = restart.get('active_matches')
+        tail = ('剩余对局清空后自动重启' if not left
+                else f'剩余 {left} 局结束后自动重启')
+        return [f'🔁 已请求计划重启 (自动模式): {tail}']
+    lines = [f'⚠️ 计划重启请求失败 ({compilemod.RESTART_STATUS_LABELS.get(restart.get("status"), "异常")}'
+             + (f", HTTP {restart['http_status']}" if restart.get('http_status') else '') + ')',
+             f'❗ 原因: {restart.get("error") or "未知错误"}']
+    at_dev = _mentions(cfg, record)
+    if at_dev:
+        lines.append(at_dev + ' 计划重启未生效, 请手动安排重启')
+    return lines
+
+
+def _compile_text(cfg: dict, record: dict, result: dict, game: str,
+                  restart: dict | None = None) -> str:
     """编译结果消息。
 
     @ 规则 (force 一律不 @):
       · 编译成功 + 常规更新 → 只 @ 上传者 (热更新提示), 完全不 @ 开发者
-      · 编译成功 + 新游戏   → @ 上传者 (需等重启) + @ 开发者 (安排重启)
+      · 编译成功 + 新游戏   → @ 上传者 (需等重启); 计划重启请求成功则不 @ 开发者,
+        只有请求失败才 @ 开发者手动安排重启 (见 _restart_lines)
       · 编译失败 / 超时 / 异常 → @ 开发者复查排查
     """
     at_dev = _mentions(cfg, record)
@@ -656,16 +705,18 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str) -> str:
         elapsed = result.get('elapsed_sec')
         lines = [f'✅ 编译成功' + (f' (用时 {elapsed}s)' if elapsed is not None else '')]
         if record.get('is_new'):
-            if result.get('active_matches') is not None:
-                lines.append(f'🎲 当前剩余对局: {result["active_matches"]} '
-                             '(重启需等待剩余对局结束)')
+            # 剩余对局数优先取重启请求的回包 (比编译回包更新)
+            left = (restart or {}).get('active_matches')
+            if left is None:
+                left = result.get('active_matches')
+            if left is not None:
+                lines.append(f'🎲 当前剩余对局: {left} (重启需等待剩余对局结束)')
             lines.append(f'{uploader} 新游戏「{_game_label(record, game)}」'
                          '需等待 bot 重启后才能实装, 请耐心等待')
-            if at_dev:
-                lines.append(at_dev + ' 新游戏已就绪, 请安排重启更新')
+            lines += _restart_lines(cfg, record, restart)
         else:
-            lines.append(f'{uploader} 游戏「{_game_label(record, game)}」已自动热更新, '
-                         '重新开局即可生效;\n游戏规则与成就的修改需等待 bot 重启后生效')
+            lines.append(f'{uploader} 游戏「{_game_label(record, game)}」已自动热更新, 重新开局即可生效;\n'
+                         '游戏规则、描述、成就、倍率等属性的修改需等待 bot 重启后生效')
         return '\n'.join(lines)
 
     if st == 'timeout':

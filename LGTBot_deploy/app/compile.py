@@ -21,6 +21,13 @@
     - 504  服务端等待 600s 仍未结束 (进程保留)
   · ``POST /api/ext/lgtbot/build/terminate`` 强制中断当前编译
     - 200 {success: true, message} / 401 / 409 没有编译在进行 / 500 终止失败
+  · ``POST /api/ext/lgtbot/planned-restart`` 开 / 关计划重启维护模式
+    (webui/restart_api.py, 与编译 API 同一枚 token)
+    body ``{"enable": bool, "auto": bool=false, "reason": "文本(≤200)"}``
+    - 200 {success: true, enabled, auto, reason, active_matches, message}
+    - 400 缺 enable 或类型错 / 401 token 缺失或错误
+    开启后禁止创建新游戏, 进行中对局不受影响; ``auto=true`` 时 LGTBot 的 watcher
+    轮询, 对局清空即自动重启 —— 本插件只负责发起请求, **不跟踪重启是否真的发生**。
 
 本客户端按配置 ``compile_timeout`` (默认 180s) 等待; 超时即调 terminate 取消
 编译, 返回 status='timeout'。所有结果归一为:
@@ -52,7 +59,10 @@ _TARGET_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_\-]{0,62}$')
 
 _COMPILE_PATH = '/api/ext/lgtbot/build/compile'
 _TERMINATE_PATH = '/api/ext/lgtbot/build/terminate'
+_PLANNED_RESTART_PATH = '/api/ext/lgtbot/planned-restart'
 _TERMINATE_TIMEOUT = 15
+_RESTART_TIMEOUT = 20
+_REASON_MAX = 200        # 与 restart_api._REASON_MAX 一致, 超长由服务端截断
 
 
 def base_url(cfg: dict) -> str:
@@ -155,7 +165,91 @@ async def request_compile(game: str, cfg: dict, is_new: bool = False) -> dict:
         return _result('error', new=is_new, error=f'{type(e).__name__}: {e}')
 
 
+# ==================== 计划重启 ====================
+
+def _restart_result(status: str, **kw) -> dict:
+    base = {'status': status, 'ok': status == 'success', 'error': '', 'http_status': 0,
+            'enabled': None, 'auto': None, 'reason': '', 'active_matches': None,
+            'message': '', 'raw': ''}
+    base.update(kw)
+    return base
+
+
+async def request_planned_restart(cfg: dict, reason: str, auto: bool = True) -> dict:
+    """开启 LGTBot 计划重启维护模式 (默认自动模式)。
+
+    ``auto=True`` 时对局清空后由 LGTBot 的 watcher 自行触发重启, 本插件**只负责
+    发起请求, 不跟踪重启是否真的发生** —— 所以只要 API 确认维护模式已开启就算成功。
+    ``reason`` 展示在玩家的维护提示里 (服务端截断到 200 字)。
+
+    返回 ``{status, ok, error, http_status, enabled, auto, reason, active_matches,
+    message, raw}``; status: success=维护模式已开启 / failed=API 明确拒绝或未生效 /
+    error=网络或未知异常。
+    """
+    url = base_url(cfg) + _PLANNED_RESTART_PATH
+    payload = {'enable': True, 'auto': bool(auto), 'reason': str(reason or '')[:_REASON_MAX]}
+    try:
+        timeout = aiohttp.ClientTimeout(total=_RESTART_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as s, \
+                s.post(url, json=payload, headers=_headers(cfg)) as resp:
+            text = await resp.text()
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                data = {}
+            raw = text[:2000]
+            if resp.status == 200 and data.get('success'):
+                # success 但 enabled=false 说明维护模式没真开起来, 按失败处理
+                if not data.get('enabled'):
+                    return _restart_result(
+                        'failed', http_status=200, raw=raw,
+                        error=str(data.get('message') or '维护模式未生效 (enabled=false)'),
+                        active_matches=data.get('active_matches'))
+                return _restart_result('success', http_status=200, raw=raw,
+                                       enabled=True, auto=bool(data.get('auto')),
+                                       reason=str(data.get('reason') or ''),
+                                       active_matches=data.get('active_matches'),
+                                       message=str(data.get('message') or ''))
+            return _restart_result(
+                'failed', http_status=resp.status, raw=raw,
+                error=str(data.get('error') or f'HTTP {resp.status}: {text[:200]}'),
+                active_matches=data.get('active_matches'))
+    except (asyncio.TimeoutError, aiohttp.ServerTimeoutError):
+        return _restart_result('error', error=f'等待 {_RESTART_TIMEOUT} 秒无响应')
+    except Exception as e:  # noqa: BLE001
+        return _restart_result('error', error=f'{type(e).__name__}: {e}')
+
+
+def describe_restart(result: dict) -> str:
+    """留档用的计划重启请求结果。"""
+    if not result:
+        return '(未请求计划重启)'
+    lines = [
+        f'- 状态: {RESTART_STATUS_LABELS.get(result.get("status"), result.get("status", ""))}',
+        f'- HTTP: {result.get("http_status") or "-"}',
+        f'- 维护模式: {"已开启" if result.get("enabled") else "未开启"}'
+        + ('  + 自动重启' if result.get('auto') else ''),
+    ]
+    if result.get('reason'):
+        lines.append(f'- 维护原因: {result["reason"]}')
+    if result.get('active_matches') is not None:
+        lines.append(f'- 剩余进行中对局: {result["active_matches"]}')
+    if result.get('message'):
+        lines.append(f'- API 消息: {result["message"]}')
+    if result.get('error'):
+        lines.append(f'- 错误: {result["error"]}')
+    if result.get('raw'):
+        lines.append('- API 原始返回:\n```json\n' + result['raw'] + '\n```')
+    return '\n'.join(lines)
+
+
 # ==================== 展示辅助 ====================
+
+RESTART_STATUS_LABELS = {
+    'success': '已开启计划重启',
+    'failed': '请求被拒绝',
+    'error': '请求异常',
+}
 
 STATUS_LABELS = {
     'success': '编译成功',

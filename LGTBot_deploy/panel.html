@@ -202,9 +202,9 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
       </div>
       <div class="hint" style="margin-top:10px">
         审核通过并部署后按游戏名请求单目标编译（同步等待）：新游戏自动附加 <code>new=true</code> 走完整编译（CMake 重新配置，耗时更长），老游戏更新不带该参数、走增量编译；等待超过设定秒数自动发送取消请求并 @ 开发者复查。<br>
-        编译成功的<b>常规更新</b>只提示上传者已热更新（重新开局生效，规则/成就需等重启），完全不 @ 开发者；
-        <b>新游戏</b>则提示上传者等待重启实装、显示 API 返回的剩余对局数，并 @ 开发者安排重启。<br>
-        编译失败 / 超时 / 异常才 @ 开发者排查；编译结果与 API 返回解析写入审核记录与留档。
+        编译成功的<b>常规更新</b>只提示上传者已热更新（重新开局生效；规则、成就、游戏描述、倍率等属性的修改仍需等重启），不请求重启也完全不 @ 开发者；
+        <b>新游戏</b>编译成功后自动请求 LGTBot 计划重启（<code>planned-restart</code>，维护模式 + 自动模式，原因填「新游戏《中文名》」，取不到中文名则用目录名）：请求成功即不再 @ 开发者，剩余对局清空后由 LGTBot 自行重启，本插件只发起请求、不跟踪重启是否发生；请求失败才展示原因并 @ 开发者手动安排。<br>
+        编译失败 / 超时 / 异常才 @ 开发者排查；编译与计划重启的结果、API 返回解析一并写入审核记录与留档。
       </div>
     </div>
 
@@ -428,6 +428,17 @@ function compileText(c){
   if(c.error)parts.push(String(c.error).slice(0,120));
   return parts.join(' · ');
 }
+const RESTART_LABEL={success:'已开启计划重启',failed:'请求被拒绝',error:'请求异常'};
+function restartText(r){
+  if(!r||!r.status)return '未请求（非新游戏或编译未成功）';
+  const parts=[RESTART_LABEL[r.status]||r.status];
+  if(r.auto)parts.push('自动模式');
+  if(r.http_status)parts.push('HTTP '+r.http_status);
+  if(r.reason)parts.push('原因 '+r.reason);
+  if(r.active_matches!=null)parts.push('剩余对局 '+r.active_matches);
+  if(r.error)parts.push(String(r.error).slice(0,120));
+  return parts.join(' · ');
+}
 async function loadRecords(){
   const r=await api('/records');
   if(!r.success)return toast('读取记录失败');
@@ -477,7 +488,7 @@ async function openRecord(id){
     ['需人工处理',rec.manual?'是':'否'],['模型',rec.model||'-'],['耗时',(rec.elapsed??'-')+'s'],
     ['审核 HTTP 状态',rec.http_status??'-'],['审核尝试次数',rec.attempts||'-'],
     ['新游戏',rec.is_new?'是'+(rec.perm_bound?'（已绑定目录权限）':'（未绑定权限）'):'否'],
-    ['编译结果',compileText(rec.compile)],
+    ['编译结果',compileText(rec.compile)],['计划重启',restartText(rec.restart)],
     ['落地路径',rec.dest||'-'],['旧内容备份',rec.backup||'-'],
     ['压缩包留档',rec.archive_file||'-'],['审核留档',rec.review_file||'-'],
     ['错误',rec.error||'无'],

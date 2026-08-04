@@ -26,9 +26,16 @@ achievements.h / board.h / icon.png / mygame.cc / option.cmake / options.h /
 rule.md / unittest.cc), 可以多出其他文件, 缺少任一项即拒绝并汇报缺少哪些。
 
 自动编译 (app/compile.py): 部署成功后按游戏名请求 LGTBot_ElainaBot 的编译 API,
-超时 (默认 180s) 自动发送取消请求; 编译成功的常规更新只提示上传者已热更新
-(完全不 @ 开发者), 新游戏则 @ 上传者等待重启 + @ 开发者安排重启并显示剩余
-对局数; 编译失败/超时 @ 开发者复查。编译结果 (含 API 返回解析) 进审核记录与留档。
+超时 (默认 180s) 自动发送取消请求; 编译成功的常规更新只提示上传者已热更新, 并说明
+规则/成就/游戏描述/倍率等属性的修改仍需重启 (完全不 @ 开发者); 编译失败/超时
+@ 开发者复查。编译结果 (含 API 返回解析) 进审核记录与留档。
+
+自动计划重启 (app/compile.py): 新游戏编译成功后自动请求 LGTBot 的计划重启 API
+(``POST /api/ext/lgtbot/planned-restart``, 与编译 API 同一枚 token), 开启维护模式 +
+自动模式, 维护原因填「新游戏《游戏中文名》」(取不到中文名则用目录名)。请求成功即
+不再 @ 开发者 —— 剩余对局清空后由 LGTBot 自行重启, 本插件**只发起请求、不跟踪
+重启是否发生**; 只有请求失败才展示原因并 @ 开发者手动安排。老游戏更新走热更新,
+不请求重启也不 @ 开发者。请求结果进审核记录与留档。
 
 送审前对上传内容做提示词注入防御 (五层, 详见 app/review.py 模块 docstring): 信道中和 +
 nonce 定界 + 隔离声明 + pass 强制 nonce 回显 + 确定性预扫描 (命中即不送审直接拒绝)。
@@ -55,7 +62,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 自动部署',
     'author': 'ElainaBot',
     'description': '/upload 引用群文件上传到 lgtbot 目录, 自动内容审核 + 请求编译 + 目录权限管理',
-    'version': '1.4.4',
+    'version': '1.5.0',
 }
 
 log = get_logger(PLUGIN, 'LGTBot_deploy')
