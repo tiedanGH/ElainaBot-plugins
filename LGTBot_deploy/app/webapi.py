@@ -92,12 +92,19 @@ async def _get_records(request: web.Request):
     except ValueError:
         limit = 200
     records = store.list_records(limit)
+    # 「未通过」与「需人工处理」互斥, 与列表里的 verdictPill 同一口径:
+    # 异常兜底的 reject (manual=True, 如审核服务不可用) 只算需人工, 不算未通过 ——
+    # 那不是模型给出的明确判定, 混进去会让「未通过」虚高、两块统计还重复计数。
+    def _manual(r: dict) -> bool:
+        return bool(r.get('manual')) or r.get('stage') in ('error', 'download', 'extract', 'deploy')
+
     stats = {
         'total': len(records),
         'passed': sum(1 for r in records if r.get('stage') == 'deployed'),
         'forced': sum(1 for r in records if r.get('forced')),
-        'rejected': sum(1 for r in records if r.get('verdict') == 'reject'),
-        'manual': sum(1 for r in records if r.get('manual') or r.get('stage') in ('error', 'download', 'extract', 'deploy')),
+        'rejected': sum(1 for r in records
+                        if r.get('verdict') == 'reject' and not _manual(r)),
+        'manual': sum(1 for r in records if _manual(r)),
     }
     return web.json_response({'success': True, 'records': records, 'stats': stats,
                               'labels': review.CATEGORY_LABELS})
