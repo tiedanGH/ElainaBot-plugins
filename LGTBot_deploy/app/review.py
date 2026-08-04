@@ -17,7 +17,9 @@
 **判定结果只取结构化 JSON 里的 verdict / categories**, 模型的自然语言说明与
 思考过程一律不进入群消息, 由 store.py 落盘到 data/reviews/。任何异常
 (HTTP 失败 / 超时 / 非 JSON / 字段缺失) 都返回 ``verdict='reject'`` +
-``manual=True``, 即「默认不通过, 需人工处理」。
+``manual=True``, 即「默认不通过, 需人工处理」, 并附带 ``http_status`` /
+``error_kind`` / ``retryable`` 供上层展示与重试 (重试编排在 flow.py, 见
+``_review_with_retry``: 共 3 次尝试, 耗尽才 @ 开发者)。
 
 ==================== 提示词注入防御 (五层, 全部不依赖模型自觉) ====================
 上传者完全控制送审文本, 因此「在文件里写过审提示词」是必须堵死的攻击面:
@@ -449,11 +451,24 @@ def _norm_findings(value, allowed: tuple) -> list:
     return out[:20]
 
 
-async def _post(messages: list, cfg: dict) -> tuple[dict | None, str]:
-    """单次 /chat/completions 调用, 返回 (响应 JSON, 错误信息)。"""
+# 配置缺失属永久性失败, 重试毫无意义 (见 review() 里的 retryable)
+_KIND_CONFIG = '未配置接口密钥'
+
+
+def _fail(error: str, status: int | None, kind: str) -> dict:
+    """``_post`` 的失败信息。
+
+    ``status`` 只有真的收到过 HTTP 响应才有值 (网络异常/超时为 None); ``kind`` 是
+    给群消息用的简短描述 —— 有状态码时用不上, 没有状态码时代替它说明失败在哪。
+    """
+    return {'error': error, 'status': status, 'kind': kind}
+
+
+async def _post(messages: list, cfg: dict) -> tuple[dict | None, dict]:
+    """单次 /chat/completions 调用, 返回 (响应 JSON, 失败信息)。成功时失败信息为空壳。"""
     key = config.api_key()
     if not key:
-        return None, '未配置接口密钥'
+        return None, _fail(_KIND_CONFIG, None, _KIND_CONFIG)
     url = config.base_url() + '/chat/completions'
     payload = {
         'model': cfg.get('model') or 'gpt-4.1-nano',
@@ -469,17 +484,23 @@ async def _post(messages: list, cfg: dict) -> tuple[dict | None, str]:
                     text = await resp.text()
                     if resp.status == 200:
                         try:
-                            return json.loads(text), ''
+                            return json.loads(text), _fail('', 200, '')
                         except json.JSONDecodeError:
-                            return None, f'上游返回非 JSON: {text[:200]}'
+                            return None, _fail(f'上游返回非 JSON: {text[:200]}', 200, '')
                     # 个别推理模型拒绝自定义 temperature: 去掉后重试一次
                     if attempt == 0 and resp.status == 400 and 'temperature' in text.lower():
                         payload.pop('temperature', None)
                         continue
-                    return None, f'HTTP {resp.status}: {text[:300]}'
+                    return None, _fail(f'HTTP {resp.status}: {text[:300]}', resp.status, '')
     except Exception as e:  # noqa: BLE001 — 网络异常一律按「不通过, 需人工」处理
-        return None, f'{type(e).__name__}: {e}'
-    return None, '调用失败'
+        return None, _fail(f'{type(e).__name__}: {e}', None, type(e).__name__)
+    return None, _fail('调用失败', None, '调用失败')
+
+
+def status_text(result: dict) -> str:
+    """审核异常的简短状态串 (群消息用): 收到过 HTTP 响应就报状态码, 否则报错误类型。"""
+    st = result.get('http_status')
+    return f'HTTP {st}' if isinstance(st, int) else (result.get('error_kind') or '无 HTTP 响应')
 
 
 def _injection_report(hits: list) -> str:
@@ -496,9 +517,11 @@ def _injection_report(hits: list) -> str:
 async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
     """执行一次审核 (纯文本)。``meta['mode']`` 决定审查哪几条标准 (见模块 docstring)。
 
-    返回 ``{verdict, categories, manual, error, raw, model, elapsed, summary,
-    findings, criteria, game_name, game_desc, injection}``。``manual=True`` 表示
-    结果来自异常兜底而非模型的正常判定 —— 需人工处理。
+    返回 ``{verdict, categories, manual, error, http_status, error_kind, retryable,
+    raw, model, elapsed, summary, findings, criteria, game_name, game_desc,
+    injection}``。``manual=True`` 表示结果来自异常兜底而非模型的正常判定 ——
+    需人工处理; 此时 ``retryable`` 指出重试是否可能有救 (配置缺失就没救),
+    ``http_status`` 是上游状态码 (没收到响应则为 None), 由调用方决定要不要重试。
 
     注入防御顺序 (见模块 docstring): 先跑 L5 预扫描, 命中直接拒绝且不请求模型;
     否则带 nonce 送审, 回来对 pass 强制校验 nonce 回显 (L4)。
@@ -509,6 +532,7 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
     local_name, local_desc = parse_game_props(pkg)
 
     base: dict = {'verdict': 'reject', 'categories': ['other'], 'manual': True, 'error': '',
+                  'http_status': None, 'error_kind': '', 'retryable': True,
                   'raw': '', 'model': cfg.get('model', ''), 'elapsed': 0.0,
                   'summary': '', 'findings': [], 'criteria': list(allowed),
                   'game_name': _clean_display(local_name), 'game_desc': str(local_desc)[:500],
@@ -528,9 +552,12 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
         {'role': 'system', 'content': build_system_prompt(mode, cfg.get('review_prompt'), nonce)},
         {'role': 'user', 'content': _build_digest(pkg, meta, nonce)},
     ]
-    resp, err = await _post(messages, cfg)
+    resp, info = await _post(messages, cfg)
     base['elapsed'] = round(time.time() - start, 1)
-    base['error'] = err
+    base['error'] = info['error']
+    base['http_status'] = info['status']
+    base['error_kind'] = info['kind']
+    base['retryable'] = info['kind'] != _KIND_CONFIG
     if resp is None:
         return base
 
@@ -567,6 +594,9 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
         'categories': [] if verdict == 'pass' else cats,
         'manual': False,
         'error': '',
+        'http_status': base['http_status'],
+        'error_kind': '',
+        'retryable': True,
         'raw': base['raw'],
         'model': base['model'],
         'elapsed': base['elapsed'],
@@ -582,8 +612,8 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
 async def probe() -> dict:
     """面板「测试连接」: 用一句最小请求验证密钥/地址/模型可用。"""
     cfg = config.all_config()
-    resp, err = await _post([{'role': 'user', 'content': '回复 ok'}], cfg)
+    resp, info = await _post([{'role': 'user', 'content': '回复 ok'}], cfg)
     if resp is None:
-        return {'ok': False, 'error': err}
+        return {'ok': False, 'error': info['error'], 'http_status': info['status']}
     text = ((resp.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
     return {'ok': True, 'model': resp.get('model') or cfg.get('model', ''), 'reply': str(text)[:100]}

@@ -240,6 +240,8 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str,
         'categories': [],
         'manual': False,
         'error': '',
+        'http_status': None,
+        'attempts': 0,
         'dest': '',
         'review_file': '',
         'archive_file': '',
@@ -356,9 +358,10 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
 
     meta = {'filename': fname, 'size': record['size'], 'total_size': info['total_size'],
             'mode': record['mode'], 'target': target['key'], 'folder': folder}
-    result = await review.review(pkg, meta, cfg)
+    result = await _review_with_retry(event, cfg, pkg, meta, record)
     record.update(stage='review', verdict=result['verdict'], categories=result['categories'],
                   manual=result['manual'], model=result['model'], error=result['error'],
+                  http_status=result.get('http_status'), attempts=result.get('attempts', 1),
                   criteria=result.get('criteria') or [], findings=result.get('findings') or [],
                   game_name=result.get('game_name') or '', game_desc=result.get('game_desc') or '')
     record['review_file'] = store.save_review_text(
@@ -370,6 +373,48 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
 
     # 7) 通过 → 部署
     return await _finish_deploy(event, cfg, record, data, staging, info, target, folder)
+
+
+# ==================== 审核重试 ====================
+
+# 审核服务异常 (HTTP 失败 / 超时 / 回复无法解析) 时的重试策略: 共 3 次尝试
+# (首次 + 2 次重试), 每次之间等 60 秒。前两次失败**不 @ 开发者** —— 多数是上游
+# 抖动或限流, 等一会儿重试就好, 不必每次都惊动人; 三次都失败才算重试次数耗尽,按需人工复核收尾并 @ 开发者。
+_REVIEW_ATTEMPTS = 3
+_REVIEW_RETRY_WAIT = 60
+
+
+async def _review_with_retry(event, cfg: dict, pkg: dict, meta: dict, record: dict) -> dict:
+    """带重试地跑内容审核, 返回最后一次的结果。
+
+    只有「服务异常」(``manual=True``) 才重试 —— 模型正常给出 reject 是有效判定,
+    重试没有意义。配置类错误 (未配置密钥, ``retryable=False``) 同样不重试。
+    结果里额外带 ``attempts`` (实际尝试次数), 供结论消息区分是首次失败还是耗尽。
+    """
+    result: dict = {}
+    for attempt in range(1, _REVIEW_ATTEMPTS + 1):
+        result = await review.review(pkg, meta, cfg)
+        result['attempts'] = attempt
+        if not result['manual'] or not result.get('retryable', True):
+            return result
+        log.warning(f'审核服务异常 (第 {attempt}/{_REVIEW_ATTEMPTS} 次, '
+                    f'{review.status_text(result)}): {result["error"]}')
+        if attempt >= _REVIEW_ATTEMPTS:
+            return result
+        await _send(event, _retry_text(record, result, attempt))
+        await asyncio.sleep(_REVIEW_RETRY_WAIT)
+    return result
+
+
+def _retry_text(record: dict, result: dict, attempt: int) -> str:
+    """重试等待提示: 只告知上传者稍等, 不 @ 开发者。"""
+    return '\n'.join([
+        f'⚠️ 审核服务异常 ({review.status_text(result)}), '
+        f'第 {attempt}/{_REVIEW_ATTEMPTS} 次尝试失败',
+        f'📦 文件: {record["filename"]} ({_size_mb(record["size"])}) → {_where(record)}',
+        f''
+        f'⏳ {_REVIEW_RETRY_WAIT} 秒后自动重试, 请勿重复上传…',
+    ])
 
 
 # ==================== 结论输出 ====================
@@ -398,6 +443,8 @@ def _review_header(record: dict, result: dict | None = None) -> str:
             f'- 结论: {result["verdict"]}',
             f'- 分类: {", ".join(result["categories"]) or "无"}',
             f'- 耗时: {result["elapsed"]}s',
+            f'- 尝试次数: {result.get("attempts", 1)} / {_REVIEW_ATTEMPTS}',
+            f'- HTTP: {review.status_text(result) if result["error"] else "HTTP 200"}',
             f'- 错误: {result["error"] or "无"}',
         ]
         floc = _finding_lines(record)
@@ -470,13 +517,16 @@ def _finding_lines(record: dict) -> list:
 async def _finish_reject(event, cfg: dict, record: dict, result: dict):
     _persist(record)
     if result['manual']:
-        # 审核服务异常 (HTTP 失败/超时/解析失败): 群里只说明需人工处理,
+        # 审核服务异常 (HTTP 失败/超时/解析失败): 群里只给状态码与重试情况,
         # 具体报错在记录与留档里, 不刷进群聊。
+        attempts = result.get('attempts', 1)
         lines = [
-            '⚠️ 审核服务异常, 需人工处理',
+            f'⚠️ 审核服务异常 ({review.status_text(result)}), 需人工处理',
             f'📦 文件: {record["filename"]} ({_size_mb(record["size"])}) → {_where(record)}',
-            f'🆔 记录: {record["id"]}',
         ]
+        if attempts > 1:
+            lines.insert(1, f'🔁 已尝试 {attempts} 次 (含 {attempts - 1} 次重试), 重试次数耗尽')
+        lines.append(f'🆔 记录: {record["id"]}')
     else:
         suspect_only = bool(result['findings']) and all(f.get('suspect') for f in result['findings'])
         lines = [

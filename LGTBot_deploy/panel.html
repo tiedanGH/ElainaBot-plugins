@@ -475,6 +475,7 @@ async function openRecord(id){
     ['阶段',STAGE_LABEL[rec.stage]||rec.stage],['结论',rec.verdict||'-'],
     ['未通过分类',(rec.categories||[]).map(c=>LABELS[c]||c).join('、')||'-'],
     ['需人工处理',rec.manual?'是':'否'],['模型',rec.model||'-'],['耗时',(rec.elapsed??'-')+'s'],
+    ['审核 HTTP 状态',rec.http_status??'-'],['审核尝试次数',rec.attempts||'-'],
     ['新游戏',rec.is_new?'是'+(rec.perm_bound?'（已绑定目录权限）':'（未绑定权限）'):'否'],
     ['编译结果',compileText(rec.compile)],
     ['落地路径',rec.dest||'-'],['旧内容备份',rec.backup||'-'],
