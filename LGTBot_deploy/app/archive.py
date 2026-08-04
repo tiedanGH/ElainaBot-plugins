@@ -141,6 +141,26 @@ def _read_text(path: str) -> str:
         return ''
 
 
+def _is_rule_file(low_name: str) -> bool:
+    return (low_name in ('rule.md', 'readme.md', 'rule.txt', 'readme')
+            or low_name.startswith('rule.'))
+
+
+def _text_priority(low_name: str) -> int:
+    """文本文件领取 ``text_budget`` 的优先级 (数字越小越先拿)。
+
+    预算是先到先得的, 按 ``os.walk`` 顺序发放会让大游戏翻车: ``mygame.cc`` 前面
+    排着 achievements.h / board.h / card.h… 每个最多吃 20000 字, 预算耗尽后关键
+    文件**整份不进 texts** —— 游戏名称/描述取不到 (本地兜底正则也没得解析),
+    rule.md 更是连内容都没送审, 标准一只能瞎判。所以这两类必须先领预算。
+    """
+    if _is_rule_file(low_name):
+        return 0    # 规则说明: 标准一「原作标注」的判断依据
+    if low_name == 'mygame.cc':
+        return 1    # 游戏属性: game_name / game_desc 的唯一来源
+    return 2
+
+
 def collect(root_dir: str, limits: dict) -> dict:
     """遍历解压结果, 产出送审素材 (仅文字: 图片/字体等二进制资源只进清单, 不读内容)。
 
@@ -148,8 +168,11 @@ def collect(root_dir: str, limits: dict) -> dict:
       ``tree``    [{path, size, kind}]      全部文件清单 (kind: text/image/font/binary)
       ``texts``   [{path, content, truncated}]  文本内容 (受 text_budget 预算约束)
       ``rule_files`` 命中 rule*.md / readme 的路径列表
+
+    文本内容按 ``_text_priority`` 的优先级领取预算 (见那里的说明), 清单 ``tree``
+    与 ``rule_files`` 不受预算影响, 始终完整。
     """
-    tree, texts, rule_files = [], [], []
+    tree, rule_files, pending = [], [], []
     budget = max(0, int(limits.get('text_budget', 0)))
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = sorted(d for d in dirnames if d not in ('.git', '__pycache__', 'node_modules'))
@@ -170,18 +193,25 @@ def collect(root_dir: str, limits: dict) -> dict:
             else:
                 kind = 'binary'
             tree.append({'path': rel, 'size': size, 'kind': kind})
-            if low in ('rule.md', 'readme.md', 'rule.txt', 'readme') or low.startswith('rule.'):
+            if _is_rule_file(low):
                 rule_files.append(rel)
-            if kind == 'text' and budget > 0:
-                content = _read_text(full)
-                if not content:
-                    continue
-                truncated = len(content) > _MAX_TEXT_PER_FILE
-                content = content[:_MAX_TEXT_PER_FILE]
-                if len(content) > budget:
-                    content, truncated = content[:budget], True
-                budget -= len(content)
-                texts.append({'path': rel, 'content': content, 'truncated': truncated})
+            if kind == 'text':
+                # 排序键带上遍历序号, 同优先级内仍按原来的目录遍历顺序发放
+                pending.append((_text_priority(low), len(pending), rel, full))
+
+    texts = []
+    for _, _, rel, full in sorted(pending):
+        if budget <= 0:
+            break
+        content = _read_text(full)
+        if not content:
+            continue
+        truncated = len(content) > _MAX_TEXT_PER_FILE
+        content = content[:_MAX_TEXT_PER_FILE]
+        if len(content) > budget:
+            content, truncated = content[:budget], True
+        budget -= len(content)
+        texts.append({'path': rel, 'content': content, 'truncated': truncated})
     # rule.md 必须优先送审: 把它排到文本列表最前面
     texts.sort(key=lambda t: (0 if t['path'].lower().endswith('rule.md') else 1, t['path']))
     return {'tree': tree, 'texts': texts, 'rule_files': rule_files}

@@ -55,7 +55,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 自动部署',
     'author': 'ElainaBot',
     'description': '/upload 引用群文件上传到 lgtbot 目录, 自动内容审核 + 请求编译 + 目录权限管理',
-    'version': '1.4.2',
+    'version': '1.4.3',
 }
 
 log = get_logger(PLUGIN, 'LGTBot_deploy')
