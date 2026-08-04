@@ -24,6 +24,13 @@ FONT_EXTS = ('.ttf', '.otf', '.ttc', '.woff', '.woff2')
 
 _MAX_TEXT_PER_FILE = 20000       # 单个文本文件上送的字符上限
 
+# 游戏属性源文件: k_properties 里的 .name_ / .description_ 由 review.parse_game_props
+# 解析。它**不受上面的上送上限约束**, 单独完整留存一份 —— k_properties 常写在
+# mygame.cc 末尾 (社区游戏按 MakeMainStage → k_properties 的顺序收尾, 如 blokus
+# 34884 字的文件里属性在 33695 处), 从截断到 20000 字的送审文本里根本读不到。
+PROPS_FILE = 'mygame.cc'
+_MAX_PROPS_READ = 1000000        # 属性源文件完整读取上限 (防超大文件占内存)
+
 
 class ArchiveError(Exception):
     """压缩包非法 / 超限 (错误信息可直接回给群里)。"""
@@ -133,10 +140,11 @@ def extract(data: bytes, filename: str, dest: str, limits: dict) -> dict:
 
 # ==================== 待审核内容采集 ====================
 
-def _read_text(path: str) -> str:
+def _read_text(path: str, limit: int = _MAX_TEXT_PER_FILE) -> str:
+    """读文本 (最多 ``limit`` + 1 个字符, 多读一个用于判断是否发生截断)。"""
     try:
         with open(path, encoding='utf-8', errors='replace') as f:
-            return f.read(_MAX_TEXT_PER_FILE + 1)
+            return f.read(limit + 1)
     except OSError:
         return ''
 
@@ -168,11 +176,13 @@ def collect(root_dir: str, limits: dict) -> dict:
       ``tree``    [{path, size, kind}]      全部文件清单 (kind: text/image/font/binary)
       ``texts``   [{path, content, truncated}]  文本内容 (受 text_budget 预算约束)
       ``rule_files`` 命中 rule*.md / readme 的路径列表
+      ``props_source`` mygame.cc 完整原文 (供本地解析游戏属性, 不受预算/截断约束)
 
-    文本内容按 ``_text_priority`` 的优先级领取预算 (见那里的说明), 清单 ``tree``
-    与 ``rule_files`` 不受预算影响, 始终完整。
+    文本内容按 ``_text_priority`` 的优先级领取预算 (见那里的说明), 清单 ``tree``、
+    ``rule_files`` 与 ``props_source`` 不受预算影响, 始终完整。
     """
     tree, rule_files, pending = [], [], []
+    props_source = ''
     budget = max(0, int(limits.get('text_budget', 0)))
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = sorted(d for d in dirnames if d not in ('.git', '__pycache__', 'node_modules'))
@@ -195,6 +205,8 @@ def collect(root_dir: str, limits: dict) -> dict:
             tree.append({'path': rel, 'size': size, 'kind': kind})
             if _is_rule_file(low):
                 rule_files.append(rel)
+            if low == PROPS_FILE and not props_source:
+                props_source = _read_text(full, _MAX_PROPS_READ)
             if kind == 'text':
                 # 排序键带上遍历序号, 同优先级内仍按原来的目录遍历顺序发放
                 pending.append((_text_priority(low), len(pending), rel, full))
@@ -214,7 +226,8 @@ def collect(root_dir: str, limits: dict) -> dict:
         texts.append({'path': rel, 'content': content, 'truncated': truncated})
     # rule.md 必须优先送审: 把它排到文本列表最前面
     texts.sort(key=lambda t: (0 if t['path'].lower().endswith('rule.md') else 1, t['path']))
-    return {'tree': tree, 'texts': texts, 'rule_files': rule_files}
+    return {'tree': tree, 'texts': texts, 'rule_files': rule_files,
+            'props_source': props_source}
 
 
 def missing_required(tree: list, required: list) -> list:
@@ -244,10 +257,15 @@ def collect_single(data: bytes, filename: str, limits: dict) -> dict:
     else:
         kind = 'binary'
     tree = [{'path': filename, 'size': len(data), 'kind': kind}]
-    texts = []
-    if kind == 'text' and limits.get('text_budget', 0) > 0:
-        budget = min(int(limits['text_budget']), _MAX_TEXT_PER_FILE)
+    texts, raw = [], ''
+    if kind == 'text':
         raw = data.decode('utf-8', errors='replace')
-        texts.append({'path': filename, 'content': raw[:budget], 'truncated': len(raw) > budget})
+        if limits.get('text_budget', 0) > 0:
+            budget = min(int(limits['text_budget']), _MAX_TEXT_PER_FILE)
+            texts.append({'path': filename, 'content': raw[:budget],
+                          'truncated': len(raw) > budget})
     rule_files = [filename] if low.endswith('rule.md') else []
-    return {'tree': tree, 'texts': texts, 'rule_files': rule_files}
+    # 单独替换 mygame.cc 时同样要拿到完整原文 (送审那份可能已被截断)
+    props_source = raw[:_MAX_PROPS_READ] if os.path.basename(low) == PROPS_FILE else ''
+    return {'tree': tree, 'texts': texts, 'rule_files': rule_files,
+            'props_source': props_source}

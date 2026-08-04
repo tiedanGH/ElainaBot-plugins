@@ -368,12 +368,20 @@ def _parse_prop(source: str, field: str) -> str:
 
 
 def parse_game_props(pkg: dict) -> tuple:
-    """本地解析 mygame.cc 的 ``.name_`` / ``.description_``, 返回 (name, desc)。"""
-    for t in pkg.get('texts') or []:
-        if str(t.get('path') or '').lower().endswith('mygame.cc'):
-            src = t.get('content') or ''
-            return _parse_prop(src, 'name_'), _parse_prop(src, 'description_')
-    return '', ''
+    """本地解析 mygame.cc 的 ``.name_`` / ``.description_``, 返回 (name, desc)。
+
+    优先用 ``pkg['props_source']`` —— 那是 archive.collect 单独留存的 **完整**
+    mygame.cc 原文。送审文本受 text_budget 与单文件 20000 字上限约束, 而
+    k_properties 常写在文件末尾 (社区游戏按 MakeMainStage → k_properties 收尾),
+    从截断后的送审片段里读不到属性。没有该字段时退回扫描 texts (兼容旧结构)。
+    """
+    src = str(pkg.get('props_source') or '')
+    if not src:
+        for t in pkg.get('texts') or []:
+            if str(t.get('path') or '').lower().endswith('mygame.cc'):
+                src = t.get('content') or ''
+                break
+    return _parse_prop(src, 'name_'), _parse_prop(src, 'description_')
 
 
 def _extract_json(text: str) -> dict | None:
