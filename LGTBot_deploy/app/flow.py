@@ -68,7 +68,7 @@ def usage() -> str:
     ]
     if required:
         lines.append('🔸压缩包必须包含: ' + '、'.join(required))
-    lines.append('🔸rule.md 需注明游戏原型出处')
+    lines.append('🔸rule.md 需有原作标注 (改编需注明「改编自 X」)')
     lines.append('🔸新游戏上传成功后目录自动绑定上传者, 此后仅绑定用户可更新该目录')
     lines.append('🔸审核通过后自动请求编译并回报结果')
     return '\n'.join(lines)
