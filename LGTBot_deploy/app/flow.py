@@ -79,13 +79,19 @@ def usage() -> str:
 
 # ==================== 消息发送 ====================
 
-async def _send(event, text: str):
-    """优先被动回复 (不占主动额度); 失败退回主动群消息。"""
-    try:
-        if await event.reply(text):
-            return
-    except Exception as e:  # noqa: BLE001
-        log.warning(f'被动回复失败, 改用主动消息: {e}')
+async def _send(event, text: str, active: bool = False):
+    """优先被动回复 (不占主动额度); 失败退回主动群消息。
+
+    ``active=True`` 跳过被动回复直接发主动消息: 被动消息 ID 只在收到消息后的
+    5 分钟内有效, 长耗时收尾 (如编译等到超时才回) 到这一步时它多半已经失效,
+    再走被动只会静默丢消息。
+    """
+    if not active:
+        try:
+            if await event.reply(text):
+                return
+        except Exception as e:  # noqa: BLE001
+            log.warning(f'被动回复失败, 改用主动消息: {e}')
     try:
         await event.send_to_group(event.group_id, text)
     except Exception as e:  # noqa: BLE001
@@ -654,7 +660,10 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
         notes.append('## 计划重启请求\n' + compilemod.describe_restart(restart))
     store.append_review_text(record['id'], '\n\n'.join(notes))
     _persist(record)
-    await _send(event, _compile_text(cfg, record, result, game, restart))
+    # 编译超时意味着已经干等了 compile_timeout (默认 180s), 加上前面的下载/审核,
+    # 被动消息 ID 的 5 分钟有效期基本已过 —— 这一条直接走主动消息, 别丢了结论。
+    await _send(event, _compile_text(cfg, record, result, game, restart),
+                active=result.get('status') == 'timeout')
 
 
 def _restart_game_name(record: dict, game: str) -> str:
