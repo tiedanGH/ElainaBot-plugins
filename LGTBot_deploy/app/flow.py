@@ -660,10 +660,10 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
         notes.append('## 计划重启请求\n' + compilemod.describe_restart(restart))
     store.append_review_text(record['id'], '\n\n'.join(notes))
     _persist(record)
-    # 编译超时意味着已经干等了 compile_timeout (默认 180s), 加上前面的下载/审核,
-    # 被动消息 ID 的 5 分钟有效期基本已过 —— 这一条直接走主动消息, 别丢了结论。
-    await _send(event, _compile_text(cfg, record, result, game, restart),
-                active=result.get('status') == 'timeout')
+    # 编译结果一律走主动消息: 走到这一步的累计耗时 (下载 + 解压 + 审核, 审核还可能
+    # 重试 3 次、间隔 60s, 再加最长 compile_timeout 的编译) 很容易超过被动消息 ID
+    # 的 5 分钟有效期, 用被动只会把结论静默丢掉 —— 不差这一条主动额度。
+    await _send(event, _compile_text(cfg, record, result, game, restart), active=True)
 
 
 def _restart_game_name(record: dict, game: str) -> str:
