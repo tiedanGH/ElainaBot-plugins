@@ -209,14 +209,20 @@ def collect(root_dir: str, limits: dict) -> dict:
                 props_source = _read_text(full, _MAX_PROPS_READ)
             if kind == 'text':
                 # 排序键带上遍历序号, 同优先级内仍按原来的目录遍历顺序发放
-                pending.append((_text_priority(low), len(pending), rel, full))
+                pending.append((_text_priority(low), len(pending), rel, full, size))
 
     texts = []
-    for _, _, rel, full in sorted(pending):
+    for _, _, rel, full, size in sorted(pending):
+        if not size:
+            # 0 字节文件不占预算, 但**必须**留一条空记录: 清单里有、内容块里没有,
+            # 模型只能理解成「这个文件的内容没给我」, 进而判送审不完整、依据不足。
+            texts.append({'path': rel, 'content': '', 'truncated': False})
+            continue
         if budget <= 0:
-            break
+            continue    # 预算耗尽: 后面的非空文件不再上送, 但空文件仍要登记
         content = _read_text(full)
         if not content:
+            texts.append({'path': rel, 'content': '', 'truncated': False})
             continue
         truncated = len(content) > _MAX_TEXT_PER_FILE
         content = content[:_MAX_TEXT_PER_FILE]

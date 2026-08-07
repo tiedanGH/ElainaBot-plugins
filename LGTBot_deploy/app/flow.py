@@ -548,6 +548,7 @@ async def _finish_reject(event, cfg: dict, record: dict, result: dict):
         if floc:
             lines.append('📍 违规位置:')
             lines += floc
+        lines.append('')
         lines.append(f'🆔 记录: {record["id"]}')
         lines.append('📄 详细说明已留档, 请在后台「LGTBot 自动部署」页查看')
     at = _mentions(cfg, record)
