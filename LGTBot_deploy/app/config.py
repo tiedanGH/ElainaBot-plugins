@@ -50,7 +50,7 @@ DEFAULTS = {
     'max_archive_mb': 50,        # 压缩包体积上限
     'max_uncompressed_mb': 200,  # 解压后总体积上限
     'max_files': 2000,           # 解压后文件数上限
-    'text_budget': 120000,       # 上送审核的文本总字符预算
+    'text_budget': 150000,       # 送审文本总字符上限
     'download_timeout': 60,      # 下载超时 (秒)
 }
 
@@ -79,7 +79,7 @@ _COMMENTS = {
     'max_archive_mb': '压缩包体积上限 (MB)',
     'max_uncompressed_mb': '解压后总体积上限 (MB)',
     'max_files': '解压后文件数上限',
-    'text_budget': '上送审核的文本总字符预算',
+    'text_budget': '上送审核的文本总字符上限 (整包全文送审, 不截断; 超出即拒收并提示超限)',
     'download_timeout': '下载超时 (秒)',
 }
 

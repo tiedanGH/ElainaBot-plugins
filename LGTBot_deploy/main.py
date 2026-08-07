@@ -21,6 +21,11 @@
 不构成拒绝理由。force 则完全跳过内容审核 —— 但压缩包成员名校验、体积限额、必需文件
 清单、落地路径越界校验照做, 不因主人身份放宽。
 
+送审文本**不做单文件截断**: 整包文本要么全文送审、要么整包拒收 —— 截断意味着截掉的
+那段从未被审查, 违规内容完全可能藏在后半段。总量超过面板配置的「送审文本上限」时
+直接报「送审文本超出上限」且不送审, 并列出最大的几个文本文件供上传者精简。该上限
+本质是模型上下文窗口的约束。
+
 压缩包完整性检查 (非 AI, force 同样拒绝): 必须包含面板配置的必需文件清单 (默认
 achievements.h / board.h / icon.png / mygame.cc / option.cmake / options.h /
 rule.md / unittest.cc), 可以多出其他文件, 缺少任一项即拒绝并汇报缺少哪些。
@@ -62,7 +67,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 自动部署',
     'author': 'ElainaBot',
     'description': '/upload 引用群文件上传到 lgtbot 目录, 自动内容审核 + 请求编译 + 目录权限管理',
-    'version': '1.5.4',
+    'version': '1.6.0',
 }
 
 log = get_logger(PLUGIN, 'LGTBot_deploy')

@@ -158,7 +158,7 @@ verdict 为 pass 时 categories 与 findings 必须为空数组。上述 {n} 条
 【送审文本的采集策略】以下都是本系统既定的采集规则, **不是上传者漏交文件**, 一律**不得**据此判 incomplete 或 reject:
 - 图片 / 字体等二进制文件只进【文件清单】, 不上送内容 —— 版权标准本就只依据文字判断;
 - 0 字节的文件在标题标「(空文件, 0 字节, 无内容可审)」且没有内容块。它**确实是空的**, 不是没给你 —— achievements.h / option.cmake 为空是常态;
-- 文本总量还有总预算, 预算耗尽后靠后的次要源文件可能不上送, 【文件清单】里能看到它们的存在。
+- 除上述两类外, **每个文本文件都是全文上送、绝不截断**。你看到的就是这个包的全部文字, 可以据此下确定的结论, 不必怀疑还有没给你的部分。
 只有当**关键判断材料本身缺失或损坏**时才用 incomplete (例如 rule.md 存在于清单却完全没有内容块、或送审文本明显乱码不可读)。
 
 game_name / game_desc 填写要求:
@@ -350,7 +350,7 @@ def _build_digest(pkg: dict, meta: dict, nonce: str = '') -> str:
         if not t['content']:
             lines.append(f'\n### {_neutralize(t["path"])}  (空文件, 0 字节, 无内容可审)')
             continue
-        lines.append(f'\n### {_neutralize(t["path"])}' + ('  (已截断)' if t['truncated'] else ''))
+        lines.append(f'\n### {_neutralize(t["path"])}')
         lines.append(f'<<<FILE_BEGIN_{nonce}>>>')
         lines.append(_number_lines(_neutralize(t['content'])))
         lines.append(f'<<<FILE_END_{nonce}>>>')
@@ -387,7 +387,7 @@ def parse_game_props(pkg: dict) -> tuple:
     """本地解析 mygame.cc 的 ``.name_`` / ``.description_``, 返回 (name, desc)。
 
     优先用 ``pkg['props_source']`` —— 那是 archive.collect 单独留存的 **完整**
-    mygame.cc 原文。送审文本受 text_budget 与单文件 20000 字上限约束, 而
+    mygame.cc 原文。送审文本受 text_budget 总量约束 (超限时整包拒收、texts 为空), 而
     k_properties 常写在文件末尾 (社区游戏按 MakeMainStage → k_properties 收尾),
     从截断后的送审片段里读不到属性。没有该字段时退回扫描 texts (兼容旧结构)。
     """

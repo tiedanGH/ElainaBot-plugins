@@ -366,6 +366,13 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
         return await _finish_deploy(event, cfg, record, data, staging, info, target, folder,
                                     skip_reason=skip_reason)
 
+    # 6.5) 送审文本超出总量上限 → 直接拒收, 不送审。
+    # 宁可拒收也不截断: 截掉的部分从未被审查, 违规内容完全可能藏在后半段。
+    if pkg.get('oversize'):
+        ov = pkg['oversize']
+        record.update(stage='review', error=_oversize_error(ov))
+        return await _finish_fail(event, cfg, record, '送审文本超出上限, 未送审',
+                                  suffix=_OVERSIZE_TIP, extra=_oversize_lines(ov))
     meta = {'filename': fname, 'size': record['size'], 'total_size': info['total_size'],
             'mode': record['mode'], 'target': target['key'], 'folder': folder}
     result = await _review_with_retry(event, cfg, pkg, meta, record)
@@ -483,14 +490,16 @@ def _where(record: dict) -> str:
     return f'{record["target"]}/{record["folder"]}' if record['folder'] else record['target']
 
 
-def _fail_text(record: dict, cfg: dict, title: str, suffix: str = '') -> str:
-    """失败结论: 只给原因与记录号, 不含任何模型输出。"""
+def _fail_text(record: dict, cfg: dict, title: str, suffix: str = '',
+               extra: list | None = None) -> str:
+    """失败结论: 只给原因与记录号, 不含任何模型输出。``extra`` 是补充明细行。"""
     lines = [
         f'⚠️ {title}, 需人工处理' if not suffix else f'⚠️ {title}',
         f'📦 文件: {record["filename"]} → {_where(record)}',
         f'❗ 原因: {record["error"] or "未知错误"}',
-        f'🆔 记录: {record["id"]}',
     ]
+    lines += extra or []
+    lines.append(f'🆔 记录: {record["id"]}')
     if suffix:
         lines.append(f'💡 {suffix}')
     at = _mentions(cfg, record)
@@ -499,9 +508,30 @@ def _fail_text(record: dict, cfg: dict, title: str, suffix: str = '') -> str:
     return '\n'.join(lines)
 
 
-async def _finish_fail(event, cfg: dict, record: dict, title: str, suffix: str = ''):
+async def _finish_fail(event, cfg: dict, record: dict, title: str, suffix: str = '',
+                       extra: list | None = None):
     _persist(record)
-    await _send(event, _fail_text(record, cfg, title, suffix))
+    await _send(event, _fail_text(record, cfg, title, suffix, extra))
+
+
+# ==================== 送审文本超限 ====================
+
+_OVERSIZE_TIP = '请精简过大的文本文件后重新上传 (词库 / 题库等纯数据文件建议改用二进制), 或联系管理员人工审查。'
+
+
+def _oversize_error(ov: dict) -> str:
+    return (f'包内文本总量超过审核上限 {ov["budget"]} 字 '
+            f'(共 {ov["text_files"]} 个文本文件, {_size_mb(ov["text_bytes"])}), '
+            f'读到「{ov["hit"]}」时触顶。本次未送审')
+
+
+def _oversize_lines(ov: dict) -> list:
+    """群消息里的超限明细: 最大的几个文本文件 (让上传者知道该精简谁)。"""
+    if not ov.get('largest'):
+        return []
+    return ['📄 最大的文本文件:'] + [
+        f'{i}. {f["path"]} ({_size_mb(f["size"])})'
+        for i, f in enumerate(ov['largest'], 1)]
 
 
 _MAX_SHOWN_FINDINGS = 8

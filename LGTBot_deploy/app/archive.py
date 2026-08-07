@@ -22,12 +22,13 @@ TEXT_EXTS = ('.md', '.txt', '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg',
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')
 FONT_EXTS = ('.ttf', '.otf', '.ttc', '.woff', '.woff2')
 
-_MAX_TEXT_PER_FILE = 20000       # 单个文本文件上送的字符上限
+# 送审文本**不做单文件截断**: 截断意味着截掉的那段从未被审查, 违规内容完全可能藏在后半段
+# (实测 68 个真实游戏包里 33 个的最大单文件超过 20000 字, 近一半都在被截断送审)。
+# 现在的语义是「要么整包全文送审, 要么直接拒收」
 
 # 游戏属性源文件: k_properties 里的 .name_ / .description_ 由 review.parse_game_props
-# 解析。它**不受上面的上送上限约束**, 单独完整留存一份 —— k_properties 常写在
-# mygame.cc 末尾 (社区游戏按 MakeMainStage → k_properties 的顺序收尾, 如 blokus
-# 34884 字的文件里属性在 33695 处), 从截断到 20000 字的送审文本里根本读不到。
+# 解析。它单独完整留存一份, **不受 text_budget 约束** —— 整包超限被拒收时 texts
+# 是空的, 但记录与群消息仍要能显示游戏名称。
 PROPS_FILE = 'mygame.cc'
 _MAX_PROPS_READ = 1000000        # 属性源文件完整读取上限 (防超大文件占内存)
 
@@ -140,8 +141,8 @@ def extract(data: bytes, filename: str, dest: str, limits: dict) -> dict:
 
 # ==================== 待审核内容采集 ====================
 
-def _read_text(path: str, limit: int = _MAX_TEXT_PER_FILE) -> str:
-    """读文本 (最多 ``limit`` + 1 个字符, 多读一个用于判断是否发生截断)。"""
+def _read_text(path: str, limit: int) -> str:
+    """读文本 (最多 ``limit`` + 1 个字符, 多读一个用于判断是否触顶)。"""
     try:
         with open(path, encoding='utf-8', errors='replace') as f:
             return f.read(limit + 1)
@@ -155,17 +156,16 @@ def _is_rule_file(low_name: str) -> bool:
 
 
 def _text_priority(low_name: str) -> int:
-    """文本文件领取 ``text_budget`` 的优先级 (数字越小越先拿)。
+    """文本文件的读取次序 (数字越小越先读)。
 
-    预算是先到先得的, 按 ``os.walk`` 顺序发放会让大游戏翻车: ``mygame.cc`` 前面
-    排着 achievements.h / board.h / card.h… 每个最多吃 20000 字, 预算耗尽后关键
-    文件**整份不进 texts** —— 游戏名称/描述取不到 (本地兜底正则也没得解析),
-    rule.md 更是连内容都没送审, 标准一只能瞎判。所以这两类必须先领预算。
+    送审已改为「全包全文或整包拒收」, 次序不再决定哪些文件能进 texts; 保留它
+    只为两点: 超限时 ``oversize['hit']`` 报的是压垮预算的那个大文件而不是
+    rule.md, 以及读取次序稳定可预期。
     """
     if _is_rule_file(low_name):
         return 0    # 规则说明: 标准一「原作标注」的判断依据
-    if low_name == 'mygame.cc':
-        return 1    # 游戏属性: game_name / game_desc 的唯一来源
+    if low_name == PROPS_FILE:
+        return 1    # 游戏属性: game_name / game_desc 的来源
     return 2
 
 
@@ -174,12 +174,14 @@ def collect(root_dir: str, limits: dict) -> dict:
 
     返回:
       ``tree``    [{path, size, kind}]      全部文件清单 (kind: text/image/font/binary)
-      ``texts``   [{path, content, truncated}]  文本内容 (受 text_budget 预算约束)
+      ``texts``   [{path, content}]         文本内容 (**全文, 不截断**)
       ``rule_files`` 命中 rule*.md / readme 的路径列表
-      ``props_source`` mygame.cc 完整原文 (供本地解析游戏属性, 不受预算/截断约束)
+      ``props_source`` mygame.cc 完整原文 (供本地解析游戏属性, 不受预算约束)
+      ``oversize`` 文本总量超过 text_budget 时的详情, 未超为 None
 
-    文本内容按 ``_text_priority`` 的优先级领取预算 (见那里的说明), 清单 ``tree``、
-    ``rule_files`` 与 ``props_source`` 不受预算影响, 始终完整。
+    文本要么全文进 ``texts``, 要么整包判 ``oversize`` 交由上层拒收 —— 不存在
+    「送了一半」的中间态 (见文件头的说明)。``oversize`` 时 ``texts`` 为空,
+    但 ``tree`` / ``rule_files`` / ``props_source`` 照常完整, 便于给出超限详情。
     """
     tree, rule_files, pending = [], [], []
     props_source = ''
@@ -211,29 +213,37 @@ def collect(root_dir: str, limits: dict) -> dict:
                 # 排序键带上遍历序号, 同优先级内仍按原来的目录遍历顺序发放
                 pending.append((_text_priority(low), len(pending), rel, full, size))
 
-    texts = []
+    texts, total, oversize = [], 0, None
     for _, _, rel, full, size in sorted(pending):
         if not size:
-            # 0 字节文件不占预算, 但**必须**留一条空记录: 清单里有、内容块里没有,
-            # 模型只能理解成「这个文件的内容没给我」, 进而判送审不完整、依据不足。
-            texts.append({'path': rel, 'content': '', 'truncated': False})
+            # 0 字节文件也要留一条空记录: 清单里有、内容块里没有, 模型只能理解成
+            # 「这个文件的内容没给我」, 进而判送审不完整、依据不足。
+            texts.append({'path': rel, 'content': ''})
             continue
-        if budget <= 0:
-            continue    # 预算耗尽: 后面的非空文件不再上送, 但空文件仍要登记
-        content = _read_text(full)
+        # 单个文件最多读 budget+1 字: 就算它自己就超总预算, 也不会整个读进内存
+        content = _read_text(full, budget)
         if not content:
-            texts.append({'path': rel, 'content': '', 'truncated': False})
+            texts.append({'path': rel, 'content': ''})
             continue
-        truncated = len(content) > _MAX_TEXT_PER_FILE
-        content = content[:_MAX_TEXT_PER_FILE]
-        if len(content) > budget:
-            content, truncated = content[:budget], True
-        budget -= len(content)
-        texts.append({'path': rel, 'content': content, 'truncated': truncated})
+        total += len(content)
+        if total > budget:
+            oversize = _oversize(tree, budget, rel)
+            texts = []          # 不送审了, 内容没必要继续占内存
+            break
+        texts.append({'path': rel, 'content': content})
     # rule.md 必须优先送审: 把它排到文本列表最前面
     texts.sort(key=lambda t: (0 if t['path'].lower().endswith('rule.md') else 1, t['path']))
     return {'tree': tree, 'texts': texts, 'rule_files': rule_files,
-            'props_source': props_source}
+            'props_source': props_source, 'oversize': oversize}
+
+
+def _oversize(tree: list, budget: int, hit: str) -> dict:
+    """超限详情: 总量 (按字节, 免得为了报个数把超大文件全读一遍) + 最大的几个文本文件。"""
+    texts = [(it['size'], it['path']) for it in tree if it['kind'] == 'text']
+    texts.sort(reverse=True)
+    return {'budget': budget, 'hit': hit, 'text_files': len(texts),
+            'text_bytes': sum(s for s, _ in texts),
+            'largest': [{'path': p, 'size': s} for s, p in texts[:5]]}
 
 
 def missing_required(tree: list, required: list) -> list:
@@ -263,15 +273,17 @@ def collect_single(data: bytes, filename: str, limits: dict) -> dict:
     else:
         kind = 'binary'
     tree = [{'path': filename, 'size': len(data), 'kind': kind}]
-    texts, raw = [], ''
+    texts, raw, oversize = [], '', None
+    budget = max(0, int(limits.get('text_budget', 0)))
     if kind == 'text':
         raw = data.decode('utf-8', errors='replace')
-        if limits.get('text_budget', 0) > 0:
-            budget = min(int(limits['text_budget']), _MAX_TEXT_PER_FILE)
-            texts.append({'path': filename, 'content': raw[:budget],
-                          'truncated': len(raw) > budget})
+        if len(raw) > budget:
+            # 与 collect 同一原则: 超限就拒收, 不截断送审
+            oversize = _oversize(tree, budget, filename)
+        else:
+            texts.append({'path': filename, 'content': raw})
     rule_files = [filename] if low.endswith('rule.md') else []
-    # 单独替换 mygame.cc 时同样要拿到完整原文 (送审那份可能已被截断)
+    # 属性解析用完整原文, 不受送审上限约束
     props_source = raw[:_MAX_PROPS_READ] if os.path.basename(low) == PROPS_FILE else ''
     return {'tree': tree, 'texts': texts, 'rule_files': rule_files,
-            'props_source': props_source}
+            'props_source': props_source, 'oversize': oversize}

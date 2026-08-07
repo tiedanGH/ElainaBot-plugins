@@ -215,7 +215,11 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
         <div class="field"><label>解压后上限(MB)</label><input id="max_uncompressed_mb" type="number" min="1" max="8192"></div>
         <div class="field"><label>文件数上限</label><input id="max_files" type="number" min="1" max="100000"></div>
         <div class="field"><label>下载超时(秒)</label><input id="download_timeout" type="number" min="5" max="600"></div>
-        <div class="field"><label>送审文本预算(字符)</label><input id="text_budget" type="number" min="0" max="1000000" step="1000"></div>
+        <div class="field"><label>送审文本上限(字符)</label><input id="text_budget" type="number" min="0" max="1000000" step="1000"></div>
+      </div>
+      <div class="hint" style="margin-top:10px">
+        送审文本<b>不做单文件截断</b>：整包文本要么全文送审，要么整包拒收 —— 截断意味着截掉的那段从未被审查，违规内容完全可能藏在后半段。
+        文本总量超过上限时<b>不送审</b>。这个上限本质是<b>模型上下文窗口</b>的约束，调高前先确认所选模型吃得下。
       </div>
       <div class="field" style="margin-top:14px">
         <label>压缩包必需文件清单（每行一个文件名，任意层级匹配；留空 = 不检查）</label>
