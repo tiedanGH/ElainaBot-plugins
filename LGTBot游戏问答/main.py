@@ -34,9 +34,9 @@ from .app import (
 
 __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
-    'author': 'tiedanGH',
+    'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.1.0',
+    'version': '1.2.0',
     'license': 'MIT',
 }
 
@@ -126,6 +126,92 @@ def _leaked_tool_xml(answer: str) -> bool:
     return bool(_LEAKED_TOOL_XML.search(str(answer or '')))
 
 
+# 真正把内容读进上下文的工具。list_games / list_dir 只给出目录清单，
+# 拿它们当「查过代码」的依据是不够的。
+_CONTENT_TOOLS = {'read_game_rule', 'read_file', 'search_code'}
+
+# 形如 mygame.cc:120 / lgtbot/games/x/achievements.h:10-24 的出处标注
+_CITATION_RE = re.compile(
+    r'([\w./\-]+\.(?:cc|cpp|cxx|c|h|hpp|hxx|inl|md|py|cmake|txt|json|ya?ml|sh|js|ts))'
+    r'\s*[:：]\s*\d+',
+)
+
+# 「完全没调用工具」时允许的最大答案长度。留给「没有查到」「你问的是哪一个？」
+# 这类短回复，它们本来就不需要检索。
+_NO_TOOL_CHARS = 60
+
+# 「只列了清单、没读任何文件」时允许的最大答案长度。列表类问题（有哪些游戏、
+# 某目录下有什么）确实只靠 list_* 就能答，且可能列得比较长，所以放宽到这里；
+# 超过这个长度还一个文件都没读，基本就是在展开自己想象的机制了。
+_LIST_ONLY_CHARS = 300
+
+
+def _collect_paths(name: str, result, seen: set) -> None:
+    """把工具真实返回过的路径收进 seen，用于事后核对模型给的出处。"""
+    if not isinstance(result, dict) or not result.get('ok'):
+        return
+    own = str(result.get('path') or '')
+    if own:
+        seen.add(own)
+    for item in result.get('matches') or []:
+        if isinstance(item, dict) and item.get('path'):
+            seen.add(str(item['path']))
+    for item in result.get('games') or []:
+        if isinstance(item, dict) and item.get('path'):
+            seen.add(str(item['path']))
+    if name == 'list_dir' and own:
+        for item in result.get('entries') or []:
+            if isinstance(item, dict) and item.get('name'):
+                seen.add(f'{own}/{item["name"]}')
+
+
+def _fake_citations(answer: str, seen: set, current: dict) -> list:
+    """挑出答案里指向**不存在**文件的出处标注。
+
+    实测模型会编出 `<游戏>/game_logic/combinations.py:212-230` 这种路径 —— 整个
+    项目是 C++，连 .py 都没有。凡是工具没返回过、且沙箱里也不存在的路径，
+    就是凭空捏造，这种答案一个字都不能发出去。
+
+    只按 basename 比对：模型常把完整路径缩写成 `mygame.cc:120`，那是合理写法，
+    不该误判成捏造。
+    """
+    if not answer:
+        return []
+    known = {item.rsplit('/', 1)[-1] for item in seen}
+    fake = []
+    for cited in dict.fromkeys(_CITATION_RE.findall(answer)):
+        if cited.rsplit('/', 1)[-1] in known:
+            continue
+        try:
+            sandbox.resolve(current, cited, must_be_file=True)
+        except sandbox.SandboxError:
+            fake.append(cited)
+    return fake
+
+
+def _grounding_problem(answer: str, used: set, seen: set, current: dict) -> str:
+    """答案是否站得住脚。返回空串表示通过，否则是记进日志的原因。
+
+    三道闸，都不针对任何具体游戏：
+      1. 出处指向不存在的文件 —— 铁证，直接毙掉
+      2. 一个工具都没调用还长篇大论 —— 纯凭想象作答
+      3. 只列了清单、没读任何文件，却写出长篇机制说明 —— 同样是在编
+
+    闸 2、3 用长度分档，是为了不误伤合理的短回复和列表类回答：
+    「没有查到」「你问的是哪个版本？」不需要检索，「已收录 67 个游戏，包括…」
+    只靠 list_games 就能答且可能较长。
+    """
+    fake = _fake_citations(answer, seen, current)
+    if fake:
+        return f'引用了不存在的文件: {"、".join(fake[:5])}'
+    length = len(answer)
+    if not used and length > _NO_TOOL_CHARS:
+        return f'一个工具都没调用就给出了 {length} 字的回答'
+    if used and not (used & _CONTENT_TOOLS) and length > _LIST_ONLY_CHARS:
+        return f'只列了清单没读任何文件，却给出了 {length} 字的回答'
+    return ''
+
+
 def _with_disclaimer(answer: str, current: dict) -> str:
     """给 AI 答案附上免责声明。
 
@@ -164,11 +250,16 @@ async def _answer(event, question: str) -> None:
 
     scope = _scope(event)
     tool_calls = 0
+    used_tools: set = set()
+    seen_paths: set = set()
 
     async def tool_handler(name: str, arguments: dict):
         nonlocal tool_calls
         tool_calls += 1
-        return await tools.run(name, arguments, current)
+        result = await tools.run(name, arguments, current)
+        used_tools.add(str(name))
+        _collect_paths(str(name), result, seen_paths)
+        return result
 
     message_id = None
     try:
@@ -184,23 +275,37 @@ async def _answer(event, question: str) -> None:
         )
         payload = [*history, {'role': 'user', 'content': question}]
         system_prompt = central.build_system_prompt(current, _scope_hint(current))
-        result = await central.ask(current, payload, system_prompt, tool_handler, scope)
-        answer = str(result.get('text') or '').strip()
-        if _leaked_tool_xml(answer):
-            # 工具调用写成了属性式 XML，中央层没解析出来也没执行。再给一次机会，
-            # 附上纠正指令；仍然失败就走异常分支，绝不把 raw XML 发给用户。
-            log.warning('模型输出了未被解析的工具调用 XML，附纠正指令重试一次')
-            await asyncio.to_thread(store.bump, 'xml_retries')
+        answer, reason = '', ''
+        # 一次正常调用 + 最多一次纠正重试。两次都不合格就宁可报错，也不发
+        # 未经检索的答案 —— 编造的规则比「查询失败」危害大得多。
+        for attempt in (1, 2):
+            correction = ''
+            if attempt == 2:
+                correction = (
+                    central.CORRECTION_PROMPT if _leaked_tool_xml(answer)
+                    else central.UNGROUNDED_PROMPT
+                )
+                log.warning(f'答案不合格({reason})，附纠正指令重试一次')
+                await asyncio.to_thread(store.bump, 'regenerations')
+                used_tools.clear()
+                seen_paths.clear()
             result = await central.ask(
                 current, payload,
-                f'{system_prompt}\n\n{central.CORRECTION_PROMPT}',
+                f'{system_prompt}\n\n{correction}' if correction else system_prompt,
                 tool_handler, scope,
             )
             answer = str(result.get('text') or '').strip()
-            if _leaked_tool_xml(answer):
-                raise RuntimeError('模型两次都把工具调用写成属性式 XML，未能真正检索代码')
-        if not answer:
-            raise RuntimeError('模型没有返回内容')
+            if not answer:
+                reason = '模型没有返回内容'
+            elif _leaked_tool_xml(answer):
+                reason = '工具调用写成了属性式 XML，实际没有执行'
+            else:
+                reason = _grounding_problem(answer, used_tools, seen_paths, current)
+            if not reason:
+                break
+        else:
+            await asyncio.to_thread(store.bump, 'ungrounded')
+            raise RuntimeError(f'两次作答均不合格: {reason}')
         limit = int(current.get('answer_max_chars') or 1500)
         if len(answer) > limit:
             answer = answer[:limit] + '…'

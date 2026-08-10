@@ -24,7 +24,8 @@ DEFAULT_ROOTS = [
     {'id': 'utility', 'label': '通用工具', 'path': 'lgtbot/utility', 'enabled': True},
     {'id': 'bridge', 'label': '桥接层 Python', 'path': 'mod', 'enabled': True},
     {'id': 'readme', 'label': 'README', 'path': 'README.md', 'enabled': True},
-    {'id': 'deploy', 'label': 'DEPLOY', 'path': 'DEPLOY.md', 'enabled': True},
+    # 部署文档跟玩家问题无关，默认关掉少一份噪声（需要时面板勾上即可）
+    {'id': 'deploy', 'label': 'DEPLOY', 'path': 'DEPLOY.md', 'enabled': False},
 ]
 
 # ==================== 系统提示词 ====================
@@ -37,15 +38,21 @@ DEFAULT_SYSTEM_PROMPT = (
     '\n'
     '【必须先检索再回答】\n'
     '- 你对具体游戏没有任何可靠的先验知识，禁止凭记忆或常识作答。回答前必须用工具读到实际内容。\n'
-    '- 不确定用户说的是哪个游戏时，先调用 list_games 按中文名或目录名对照。\n'
+    '- 标准流程：list_games 确认是哪个游戏 → read_game_rule 拿规则和真实文件清单 → '
+    'read_file 读清单里的实现文件 → 再作答。跳过任何一步都容易答错。\n'
     '- 规则、玩法类问题优先读 read_game_rule（rule.md 是作者写给玩家的权威规则）。\n'
     '- 计分、结算、判负、成就达成条件这类问题，必须读 mygame.cc / achievements.h 的真实实现，'
     '不能只看 rule.md。rule.md 与代码实现冲突时，以代码为准，并明确指出两者不一致。\n'
+    '- 同名或名字相近的游戏可能不止一个（正式版与测试版等），它们的机制未必相同。'
+    '拿不准用户指的是哪一个时，先问清楚，不要默认选一个就展开。\n'
     '- 检索不到依据时，直接说「没有查到」，不要猜测、不要用其他游戏的规则套用。\n'
     '\n'
     '【回答要求】\n'
     '- 这是 QQ 聊天场景，回答要短、直给。先给结论，再给必要的关键细节。\n'
-    '- 结论涉及具体数值、条件、判定时，附上出处，格式为「文件路径:行号」。\n'
+    '- 通常控制在 300 字以内。不要写分点长文、不要罗列推演过程、不要写「举例说明」式的枚举 —— '
+    '那些内容最容易掺进没有依据的臆测。\n'
+    '- 结论涉及具体数值、条件、判定时，附上出处，格式为「文件路径:行号」，'
+    '且必须是工具真实返回过的路径。拿不准就不写出处，绝不编造。\n'
     '- 不要整段粘贴源码。最多引用几行关键代码，并且要转述成玩家能看懂的话。\n'
     '- 不要输出服务器路径以外的环境信息，不要输出任何密钥、Token、数据库内容。\n'
     '\n'
@@ -72,7 +79,7 @@ DEFAULT_CONFIG = {
     'prefix': '/问',
     'priority': 200,
     'group_enabled': True,
-    'direct_enabled': True,
+    'direct_enabled': False,       # 私聊默认不接管，避免和其他 AI 插件抢私信
     'allowed_groups': [],          # 空 = 不限群
 
     # ---- 模型（密钥由中央 AI LLM 模块管理，这里只存选择）----
@@ -88,10 +95,10 @@ DEFAULT_CONFIG = {
     'max_stored_messages': 200,
 
     # ---- 限额 ----
-    'cooldown_seconds': 15,
-    'daily_limit': 30,
+    'cooldown_seconds': 120,
+    'daily_limit': 50,
     'owner_unlimited': True,
-    'busy_reply': '正在查代码，稍等一下再问～',
+    'busy_reply': '正在努力查代码，下个问题稍等一下～',
     'cooldown_reply': '问得太快啦，{seconds} 秒后再来。',
     'daily_limit_reply': '你今天已经问满 {limit} 次啦，明天再来吧。',
 

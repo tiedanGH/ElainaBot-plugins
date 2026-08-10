@@ -40,8 +40,11 @@ TOOLS_SCHEMA = [
         'function': {
             'name': 'read_game_rule',
             'description': (
-                '读取某个游戏的 rule.md 完整规则文档（作者写给玩家的权威规则）。'
-                '玩法、流程、术语类问题首选这个。计分与结算细节要另外读 mygame.cc。'
+                '读取某个游戏的 rule.md 完整规则文档（作者写给玩家的权威规则），'
+                '并返回该游戏目录下真实存在的文件清单 source_files。'
+                '问某个游戏时**先调用它**：既拿到规则，也知道接下来能读哪些文件。'
+                '玩法、流程、术语类问题看规则即可；计分、结算、成就、选项的细节'
+                '必须再用 read_file 读 source_files 里的 .cc / .h 实现。'
             ),
             'parameters': {
                 'type': 'object',
@@ -175,9 +178,26 @@ def _read_game_rule(current: dict, arguments: dict) -> dict:
         'game': item['name'],
         'dir': item['dir'],
         'path': sandbox.relative_of(current, absolute),
-        'source_files': f'实现在 {item["path"]}/mygame.cc、achievements.h、options.h',
+        # 连同该游戏**真实存在**的文件清单一起返回。模型拿不到清单时会照着自己
+        # 想象的工程结构编路径（实测编出过 game_logic/*.py，而本项目全是 C++），
+        # 把真实清单摆在眼前，编造就失去了空间。
+        'source_files': _game_files(current, item),
+        'note': '只能引用上面 source_files 里真实存在的文件，不要臆造其他路径。',
         'content': text,
     }
+
+
+def _game_files(current: dict, item: dict) -> list:
+    """列出该游戏目录下真实存在的可读文件（相对路径）。"""
+    try:
+        absolute = sandbox.resolve(current, item['path'])
+        entries = sandbox.list_entries(current, absolute)
+    except (sandbox.SandboxError, OSError):
+        return []
+    return [
+        f'{item["path"]}/{entry["name"]}'
+        for entry in entries if entry['type'] == 'file'
+    ]
 
 
 def _normalize_pattern(value) -> str:
