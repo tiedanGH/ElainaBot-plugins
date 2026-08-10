@@ -180,20 +180,43 @@ def _read_game_rule(current: dict, arguments: dict) -> dict:
     }
 
 
+def _normalize_pattern(value) -> str:
+    """把模型常写错的通配符补全。
+
+    实测模型会传 ".cc" / "cc" / "mygame" 这类不含 * 的值，fnmatch 下一个文件都
+    匹配不上，搜索静默返回空 —— 比报错更糟，模型会以为「代码里没有」。
+    """
+    text = str(value or '').strip()
+    if not text or text == '*':
+        return '*'
+    if '*' in text or '?' in text or '[' in text:
+        return text
+    return f'*{text}' if text.startswith('.') else f'*{text}*'
+
+
 def _search_code(current: dict, arguments: dict) -> dict:
     query = str(arguments.get('query') or '')
     if not query.strip():
         return {'ok': False, 'error': '缺少 query'}
+    scope = str(arguments.get('scope') or '')
     try:
-        scope_roots = sandbox.resolve_scope(current, str(arguments.get('scope') or ''))
+        scope_roots = sandbox.resolve_scope(current, scope)
     except sandbox.SandboxError as error:
-        return {'ok': False, 'error': str(error)}
+        # 模型很自然地会把游戏中文名当 scope 传（scope="天赋云巢"）。与其报越界，
+        # 不如按游戏名解析到它的目录 —— 这正是它想表达的范围。
+        item = games.resolve(current, scope)
+        if item is None:
+            return {'ok': False, 'error': str(error)}
+        try:
+            scope_roots = sandbox.resolve_scope(current, item['path'])
+        except sandbox.SandboxError:
+            return {'ok': False, 'error': str(error)}
     if not scope_roots:
         return {'ok': False, 'error': 'LGTBot 源码目录不可用，请在面板检查「源码目录」配置'}
     limit = int(current.get('search_max_matches') or 60)
     case_sensitive = bool(arguments.get('case_sensitive'))
     needle = query if case_sensitive else query.casefold()
-    pattern = str(arguments.get('file_pattern') or '*')
+    pattern = _normalize_pattern(arguments.get('file_pattern'))
     matches: list[dict] = []
     scanned = 0
     for absolute in sandbox.iter_files(current, scope_roots, pattern):
@@ -216,10 +239,57 @@ def _search_code(current: dict, arguments: dict) -> dict:
                             }
         except OSError:
             continue
-    return {
+    result = {
         'ok': True, 'query': query, 'files_scanned': scanned,
         'matches': matches, 'truncated': False,
     }
+    if not matches and scope:
+        # 窄范围搜空了最危险：模型会直接下「这游戏没有这个东西」的结论。
+        # 实测「天赋云巢有没有组合龙」就栽在这 —— 组合龙在 talent_comb_beta 里。
+        # 所以搜空时顺手告诉模型这个词在哪些游戏出现过。
+        elsewhere = _where_else(current, needle, case_sensitive, pattern)
+        if elsewhere:
+            result['found_in_other_games'] = elsewhere
+            result['hint'] = (
+                f'当前范围内没有「{query}」，但它出现在这些游戏里：'
+                + '、'.join(f'{item["game"]}({item["dir"]})' for item in elsewhere)
+                + '。请确认用户问的是哪一个，必要时改用对应的 scope 重搜。'
+            )
+        else:
+            result['hint'] = f'整个可检索范围内都没有「{query}」，不要臆测，如实告知用户。'
+    return result
+
+
+def _where_else(current: dict, needle: str, case_sensitive: bool, pattern: str) -> list[dict]:
+    """在全部游戏里找这个词还出现在哪，返回 (游戏名, 目录, 命中数)，最多 6 个。"""
+    try:
+        roots = sandbox.resolve_scope(current, 'games')
+    except sandbox.SandboxError:
+        return []
+    if not roots or roots[0]['is_file']:
+        return []
+    prefix = roots[0]['path'] + '/'
+    counts: dict[str, int] = {}
+    for absolute in sandbox.iter_files(current, roots, pattern):
+        relative = sandbox.relative_of(current, absolute)
+        if not relative.startswith(prefix):
+            continue
+        folder = relative[len(prefix):].split('/', 1)[0]
+        if counts.get(folder, 0) >= 50:
+            continue
+        try:
+            with open(absolute, encoding='utf-8', errors='replace') as file:
+                for line in file:
+                    if needle in (line if case_sensitive else line.casefold()):
+                        counts[folder] = counts.get(folder, 0) + 1
+        except OSError:
+            continue
+    catalog = games.index(current)
+    ranked = sorted(counts.items(), key=lambda item: -item[1])[:6]
+    return [
+        {'game': catalog.get(folder, {}).get('name', folder), 'dir': folder, 'hits': hits}
+        for folder, hits in ranked
+    ]
 
 
 def _read_file(current: dict, arguments: dict) -> dict:

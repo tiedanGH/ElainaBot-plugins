@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 
 from core.base.config import cfg
@@ -35,7 +36,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': 'tiedanGH',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.0.0',
+    'version': '1.1.0',
     'license': 'MIT',
 }
 
@@ -108,13 +109,47 @@ def _scene_allowed(event, current: dict) -> bool:
 # ==================== 问答主流程 ====================
 
 
+_LEAKED_TOOL_XML = re.compile(
+    r'<\s*(?:' + '|'.join(re.escape(name) for name in tools.TOOL_NAMES) + r')[\s/>]',
+    re.IGNORECASE,
+)
+
+
+def _leaked_tool_xml(answer: str) -> bool:
+    """答案里是否混着没被执行的工具调用 XML。
+
+    中央模块的 XML 回退协议解析器只认嵌套标签写法，模型写成属性式
+    <工具名 参数="值"/> 时一个都匹配不上：raw XML 原样回到 result['text']，
+    而且中央层还记为 success。这种文本绝不能发给用户 —— 既难看，又意味着
+    这一轮压根没检索过任何代码，答案毫无依据。
+    """
+    return bool(_LEAKED_TOOL_XML.search(str(answer or '')))
+
+
+def _with_disclaimer(answer: str, current: dict) -> str:
+    """给 AI 答案附上免责声明。
+
+    只作用于**模型生成的答案**：帮助文案、限流话术、报错提示都不加 —— 那些是
+    插件自己的确定性输出，挂上「仅供参考」反而误导。
+
+    用空行分隔，markdown 下 `>` 才会渲染成引用块；纯文本模式下也只是多一个空行，
+    不会和正文黏在一起。答案本身已按 answer_max_chars 截断，声明拼在截断之后，
+    保证再长的回答也一定带着它。
+    """
+    text = str(answer or '').strip()
+    note = str(current.get('disclaimer') or '').strip()
+    if not text or not note:
+        return text
+    return f'{text}\n\n{note}'
+
+
 async def _answer(event, question: str) -> None:
     current = config.load()
     if not central.available():
         await _reply(event, central.status()['message'])
         return
     if not sandbox.roots(current):
-        await _reply(event, 'LGTBot 源码目录不可用，请管理员在「LGTBot 问答」面板检查配置。')
+        await _reply(event, 'LGTBot 源码目录不可用，请管理员在「LGTBot 游戏问答」面板检查配置。')
         return
 
     user_id = str(event.user_id)
@@ -147,14 +182,23 @@ async def _answer(event, question: str) -> None:
             store.append, scope, 'user', question,
             int(current.get('max_stored_messages') or 200),
         )
-        result = await central.ask(
-            current,
-            [*history, {'role': 'user', 'content': question}],
-            central.build_system_prompt(current, _scope_hint(current)),
-            tool_handler,
-            scope,
-        )
+        payload = [*history, {'role': 'user', 'content': question}]
+        system_prompt = central.build_system_prompt(current, _scope_hint(current))
+        result = await central.ask(current, payload, system_prompt, tool_handler, scope)
         answer = str(result.get('text') or '').strip()
+        if _leaked_tool_xml(answer):
+            # 工具调用写成了属性式 XML，中央层没解析出来也没执行。再给一次机会，
+            # 附上纠正指令；仍然失败就走异常分支，绝不把 raw XML 发给用户。
+            log.warning('模型输出了未被解析的工具调用 XML，附纠正指令重试一次')
+            await asyncio.to_thread(store.bump, 'xml_retries')
+            result = await central.ask(
+                current, payload,
+                f'{system_prompt}\n\n{central.CORRECTION_PROMPT}',
+                tool_handler, scope,
+            )
+            answer = str(result.get('text') or '').strip()
+            if _leaked_tool_xml(answer):
+                raise RuntimeError('模型两次都把工具调用写成属性式 XML，未能真正检索代码')
         if not answer:
             raise RuntimeError('模型没有返回内容')
         limit = int(current.get('answer_max_chars') or 1500)
@@ -168,7 +212,8 @@ async def _answer(event, question: str) -> None:
         await asyncio.to_thread(store.bump, 'answers')
         if tool_calls:
             await asyncio.to_thread(store.bump, 'tool_calls', tool_calls)
-        await _reply(event, answer)
+        # 免责声明在入库之后才拼：上下文里存的是干净答案，不会随历史回灌给模型
+        await _reply(event, _with_disclaimer(answer, current))
     except Exception as error:
         # 失败时撤回刚写入的提问，别在上下文里留下没有答复的半截对话
         if message_id is not None:
@@ -214,7 +259,7 @@ async def initialize() -> None:
     webpanel.register_routes()
     register_page(
         key=PAGE_KEY,
-        label='LGTBot 问答',
+        label='LGTBot 游戏问答',
         source='plugin',
         source_name='LGTBot游戏问答',
         icon=_ICON,

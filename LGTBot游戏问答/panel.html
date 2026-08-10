@@ -133,6 +133,12 @@ td code{font-size:11px;color:var(--text3)}
     <textarea id="extra_prompt" style="min-height:80px"></textarea>
   </div>
 
+  <div class="card">
+    <h2>免责声明 <small>拼在每条 AI 回答末尾</small></h2>
+    <textarea id="disclaimer" style="min-height:60px"></textarea>
+    <p class="hint">以 <code>&gt;</code> 开头会在 markdown 下渲染成引用块；纯文本模式下原样显示。只加在**模型生成的答案**后面——帮助文案、限流话术、报错提示不加。不写进上下文库，因此不会回灌给模型。留空则不附加。</p>
+  </div>
+
   <div class="bar">
     <button class="btn primary" id="save">保存配置</button>
     <button class="btn" id="reload">重新载入</button>
@@ -174,7 +180,7 @@ const NUMS = ['priority','temperature','max_tokens','max_tool_rounds','context_m
   'context_expire_seconds','cooldown_seconds','daily_limit','answer_max_chars',
   'search_max_matches','read_max_lines','file_max_bytes'];
 const TEXTS = ['prefix','lgtbot_dir','system_prompt','extra_prompt','cooldown_reply',
-  'daily_limit_reply','busy_reply','trigger_mode'];
+  'daily_limit_reply','busy_reply','trigger_mode','disclaimer'];
 
 function toast(text, bad) {
   const el = $('toast');

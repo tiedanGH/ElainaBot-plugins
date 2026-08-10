@@ -103,10 +103,33 @@ def resolve_selection(provider_id: str = '', model: str = '') -> tuple[str, str]
     return '', ''
 
 
+# 中央模块在模型不输出原生 tool_calls 时会退回 XML 文本协议，但它的解析器只认
+# <工具名><参数名>值</参数名></工具名> 和无参数的 <工具名/>。模型很容易写成属性式
+# <工具名 参数="值"/> —— 那样一个都匹配不上，raw XML 会被当成答案直接发给用户，
+# 且中央层还记为 success（modules/ai_llm/app/service.py:114 的 self_pattern）。
+#
+# 这条规则写死在代码里、而不是塞进面板可编辑的 system_prompt：后者一旦被用户改写、
+# 或被旧配置里存着的老提示词覆盖就会丢，而这是正确性相关的硬约束。
+TOOL_FORMAT_RULE = (
+    '【工具调用格式】优先使用接口原生 tool_calls。只有在不支持原生调用时才输出 XML，'
+    '且必须用嵌套标签写参数：<工具名><参数名>参数值</参数名></工具名>。'
+    '禁止把参数写成 XML 属性 —— <工具名 参数="值"/> 无法被解析，会导致工具完全没有执行。'
+    '只有完全无参数的工具才写 <工具名/>。输出 XML 时不要同时输出解释文字。'
+)
+
+# 检测到属性式泄漏后重试那一轮追加的纠正指令
+CORRECTION_PROMPT = (
+    '你上一次回复把工具调用写成了 XML 属性式，工具因此没有真正执行，请重新作答。'
+    '改用接口原生 tool_calls，或用 <工具名><参数名>参数值</参数名></工具名> 的嵌套写法，'
+    '绝不要把参数写在标签属性里。'
+)
+
+
 def build_system_prompt(current: dict, scope_hint: str) -> str:
     parts = [
         str(current.get('system_prompt') or '').strip(),
         scope_hint,
+        TOOL_FORMAT_RULE,
         str(current.get('extra_prompt') or '').strip(),
         f'回答控制在 {int(current.get("answer_max_chars") or 1500)} 字以内。',
     ]

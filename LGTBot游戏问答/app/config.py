@@ -95,6 +95,11 @@ DEFAULT_CONFIG = {
     'cooldown_reply': '问得太快啦，{seconds} 秒后再来。',
     'daily_limit_reply': '你今天已经问满 {limit} 次啦，明天再来吧。',
 
+    # ---- 免责声明 ----
+    # 只拼在发给 QQ 的那条消息末尾，**不写进上下文库**：否则会随历史回灌给模型，
+    # 白烧 token，还可能让模型自己模仿着再写一遍。留空则不附加。
+    'disclaimer': '> 此条消息由智能助手检索源码生成，可能有误或遗漏，请以游戏内实际结算为准',
+
     # ---- 检索限额（防止单次把上下文撑爆）----
     'answer_max_chars': 1500,
     'search_max_matches': 60,
