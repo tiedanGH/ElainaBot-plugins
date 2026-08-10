@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>LGTBot 问答</title>
+<style>
+:root{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;color-scheme:light;--bg:#f6f7fb;--bg2:#fff;--bg3:#f0f2f7;--text:#191c24;--text2:#4f5665;--text3:#7b8291;--border:#e2e5ec;--accent:#2563eb;--accent-soft:#e8f0ff;--success:#168457;--warn:#b45309;--warn-soft:#fef3c7;--danger:#cf3d45;--danger-soft:#fdecee;--shadow:0 10px 30px rgba(20,28,52,.07)}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-size:14px}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+.wrap{max-width:960px;margin:0 auto;padding:22px 18px 60px}
+h1{margin:0 0 4px;font-size:20px}
+.sub{margin:0 0 18px;color:var(--text3);font-size:12px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card h2{margin:0 0 14px;font-size:15px;display:flex;align-items:center;gap:8px}
+.card h2 small{font-weight:400;color:var(--text3);font-size:12px}
+.grid{display:grid;gap:12px 16px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+label{display:block;font-size:12px;color:var(--text2);margin-bottom:5px}
+input[type=text],input[type=number],select,textarea{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2)}
+textarea{min-height:150px;resize:vertical;line-height:1.6;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.row{display:flex;align-items:center;gap:8px;margin:6px 0}
+.row input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--accent)}
+.row span{font-size:13px}
+.hint{margin:6px 0 0;color:var(--text3);font-size:11px;line-height:1.6}
+.banner{padding:12px 14px;border-radius:10px;font-size:13px;line-height:1.7;margin-bottom:16px}
+.banner.warn{background:var(--warn-soft);color:var(--warn);border:1px solid #fcd34d}
+.banner.bad{background:var(--danger-soft);color:var(--danger);border:1px solid #f5c2c7}
+.stats{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}
+.stat{background:var(--bg3);border-radius:9px;padding:10px 12px}
+.stat b{display:block;font-size:19px}
+.stat span{color:var(--text3);font-size:11px}
+.roots{display:grid;gap:8px}
+.root{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:9px}
+.root input{width:16px;height:16px;margin:0;accent-color:var(--accent)}
+.root b{font-size:13px;font-weight:600}
+.root code{color:var(--text3);font-size:11px;font-family:ui-monospace,Consolas,monospace}
+.root .miss{margin-left:auto;color:var(--danger);font-size:11px}
+.root .ok{margin-left:auto;color:var(--success);font-size:11px}
+.bar{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-top:14px}
+.btn{padding:8px 16px;border:1px solid var(--border);border-radius:8px;background:var(--bg2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);padding:10px 20px;border-radius:9px;background:#191c24;color:#fff;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:99}
+.toast.show{opacity:1}
+pre{margin:10px 0 0;padding:12px;background:var(--bg3);border-radius:9px;overflow:auto;max-height:320px;font-size:11.5px;line-height:1.6}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--border)}
+th{color:var(--text3);font-weight:600;font-size:11px}
+td code{font-size:11px;color:var(--text3)}
+.search{max-width:260px;margin-bottom:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>LGTBot 游戏问答</h1>
+  <p class="sub">@机器人提问 → AI 现场检索 LGTBot 源码 → 带出处作答。模型接口与密钥由「AI LLM 服务」模块统一管理。</p>
+
+  <div id="banners"></div>
+
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="stats" id="stats"></div>
+    <p class="hint" id="source-hint"></p>
+  </div>
+
+  <div class="card">
+    <h2>基础</h2>
+    <div class="row"><input type="checkbox" id="enabled"><span>启用插件</span></div>
+    <div class="grid">
+      <div>
+        <label>触发方式</label>
+        <select id="trigger_mode">
+          <option value="at">@机器人即触发（兜底拦截）</option>
+          <option value="prefix">仅前缀触发</option>
+          <option value="both">两者都可</option>
+        </select>
+      </div>
+      <div><label>前缀</label><input type="text" id="prefix"></div>
+      <div><label>handler 优先级</label><input type="number" id="priority"></div>
+      <div><label>生效群（openid，逗号分隔，留空=不限）</label><input type="text" id="allowed_groups"></div>
+    </div>
+    <div class="row"><input type="checkbox" id="group_enabled"><span>群聊生效</span></div>
+    <div class="row"><input type="checkbox" id="direct_enabled"><span>私聊生效</span></div>
+    <p class="hint">优先级改动需重载插件才生效（装饰器在导入期读取）。<code>at</code> 模式注册的是 <code>.*</code> + <code>block=True</code> 兜底，务必确认本插件与 LGTBot_ElainaBot 绑定在不同 bot 上。</p>
+  </div>
+
+  <div class="card">
+    <h2>可检索范围 <small>AI 只能读到这里勾选的目录，其余一律拒绝</small></h2>
+    <div><label>LGTBot 插件目录（留空=自动定位同框架的 plugins/LGTBot_ElainaBot）</label><input type="text" id="lgtbot_dir"></div>
+    <div class="roots" id="roots" style="margin-top:12px"></div>
+    <p class="hint">路径相对上面的插件目录。LGTBot 自己的 <code>data/</code>（config.yaml、lgtbot.db）不在任何范围内，因此 AI 读不到，这是刻意设计 —— 不要把它加进来。</p>
+  </div>
+
+  <div class="card">
+    <h2>模型 <small id="ai-state"></small></h2>
+    <div class="grid">
+      <div><label>接口</label><select id="provider_id"></select></div>
+      <div><label>模型</label><select id="model_preference"></select></div>
+      <div><label>temperature</label><input type="number" id="temperature" step="0.1" min="0" max="2"></div>
+      <div><label>max_tokens</label><input type="number" id="max_tokens"></div>
+      <div><label>最大工具轮数</label><input type="number" id="max_tool_rounds"></div>
+      <div><label>上下文条数</label><input type="number" id="context_messages"></div>
+      <div><label>上下文过期（秒）</label><input type="number" id="context_expire_seconds"></div>
+    </div>
+    <p class="hint">留空 = 由中央模块按接口/模型优先级自动选择并故障切换。本插件不保存任何密钥。</p>
+  </div>
+
+  <div class="card">
+    <h2>限额</h2>
+    <div class="grid">
+      <div><label>冷却（秒 / 人）</label><input type="number" id="cooldown_seconds"></div>
+      <div><label>每日上限（次 / 人，0=不限）</label><input type="number" id="daily_limit"></div>
+      <div><label>回答字数上限</label><input type="number" id="answer_max_chars"></div>
+      <div><label>单次搜索命中上限</label><input type="number" id="search_max_matches"></div>
+      <div><label>单次读取行数上限</label><input type="number" id="read_max_lines"></div>
+      <div><label>可读文件体积上限（字节）</label><input type="number" id="file_max_bytes"></div>
+    </div>
+    <div class="row"><input type="checkbox" id="owner_unlimited"><span>主人不受冷却与每日上限约束</span></div>
+    <div class="grid" style="margin-top:10px">
+      <div><label>冷却话术（{seconds}）</label><input type="text" id="cooldown_reply"></div>
+      <div><label>超限话术（{limit}）</label><input type="text" id="daily_limit_reply"></div>
+      <div><label>并发话术</label><input type="text" id="busy_reply"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>提示词</h2>
+    <label>系统提示词</label>
+    <textarea id="system_prompt"></textarea>
+    <label style="margin-top:12px">追加要求（拼在系统提示词之后）</label>
+    <textarea id="extra_prompt" style="min-height:80px"></textarea>
+  </div>
+
+  <div class="bar">
+    <button class="btn primary" id="save">保存配置</button>
+    <button class="btn" id="reload">重新载入</button>
+    <button class="btn" id="prune">清理过期上下文</button>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>游戏清单 <small>中文名 ← mygame.cc 的 k_properties</small></h2>
+    <input type="text" class="search" id="game-search" placeholder="搜索游戏…">
+    <button class="btn" id="refresh-games" style="margin-left:8px">重建索引</button>
+    <div style="overflow:auto;max-height:400px;margin-top:10px"><table id="games"><thead><tr><th>中文名</th><th>目录</th><th>rule.md</th><th>简介</th></tr></thead><tbody></tbody></table></div>
+  </div>
+
+  <div class="card">
+    <h2>检索自测 <small>用真实工具跑一次，确认沙箱边界与源码目录都对</small></h2>
+    <div class="grid">
+      <div><label>工具</label><select id="probe-tool">
+        <option value="list_games">list_games</option>
+        <option value="read_game_rule">read_game_rule</option>
+        <option value="search_code">search_code</option>
+        <option value="read_file">read_file</option>
+        <option value="list_dir">list_dir</option>
+      </select></div>
+      <div><label>参数（JSON）</label><input type="text" id="probe-args" value="{}"></div>
+    </div>
+    <div class="bar"><button class="btn" id="probe">执行</button></div>
+    <pre id="probe-out" style="display:none"></pre>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '/api/ext/lgtbot-qa';
+const $ = id => document.getElementById(id);
+let state = {};
+
+const BOOLS = ['enabled','group_enabled','direct_enabled','owner_unlimited'];
+const NUMS = ['priority','temperature','max_tokens','max_tool_rounds','context_messages',
+  'context_expire_seconds','cooldown_seconds','daily_limit','answer_max_chars',
+  'search_max_matches','read_max_lines','file_max_bytes'];
+const TEXTS = ['prefix','lgtbot_dir','system_prompt','extra_prompt','cooldown_reply',
+  'daily_limit_reply','busy_reply','trigger_mode'];
+
+function toast(text, bad) {
+  const el = $('toast');
+  el.textContent = text;
+  el.style.background = bad ? '#cf3d45' : '#191c24';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+async function call(method, path, body) {
+  const options = {method, headers: {'Content-Type': 'application/json'}};
+  if (body !== undefined) options.body = JSON.stringify(body);
+  const response = await fetch(API + path, options);
+  const data = await response.json().catch(() => ({}));
+  if (!data.success) throw new Error(data.error || ('HTTP ' + response.status));
+  return data.data;
+}
+
+function renderBanners() {
+  const list = [];
+  if (state.binding_warning) list.push(['bad', state.binding_warning]);
+  if (!state.shared_ai_available) {
+    list.push(['warn', 'AI LLM 模块不可用：' + (state.shared_ai_status || {}).message]);
+  }
+  const source = state.source || {};
+  if (!source.base_exists) {
+    list.push(['bad', '找不到 LGTBot 插件目录：' + source.base_dir + '，请在下方「可检索范围」填写正确路径。']);
+  } else if (!(source.roots || []).length) {
+    list.push(['bad', '没有任何可检索范围生效。若 lgtbot/ 子模块未拉取，请在服务器执行 git submodule update --init --recursive。']);
+  } else if ((source.missing || []).length) {
+    list.push(['warn', '以下范围已勾选但目录不存在，已自动跳过：' +
+      source.missing.map(item => item.path).join('、')]);
+  }
+  $('banners').innerHTML = list.map(([kind, text]) =>
+    '<div class="banner ' + kind + '">' + text + '</div>').join('');
+}
+
+function renderRoots() {
+  const available = new Set(((state.source || {}).roots || []).map(item => item.id));
+  $('roots').innerHTML = (state.roots || []).map(item =>
+    '<div class="root"><input type="checkbox" data-root="' + item.id + '"' +
+    (item.enabled ? ' checked' : '') + '><div><b>' + item.label + '</b><br><code>' +
+    item.path + '</code></div>' +
+    (available.has(item.id) ? '<span class="ok">已就绪</span>'
+      : (item.enabled ? '<span class="miss">目录不存在</span>' : '')) + '</div>'
+  ).join('');
+}
+
+function renderProviders() {
+  const providers = ((state.shared_ai || {}).providers || []).filter(item => item.enabled);
+  const select = $('provider_id');
+  select.innerHTML = '<option value="">自动选择</option>' + providers.map(item =>
+    '<option value="' + item.id + '">' + (item.name || item.id) + '</option>').join('');
+  select.value = state.provider_id || '';
+  renderModels();
+}
+
+function renderModels() {
+  const providers = ((state.shared_ai || {}).providers || []).filter(item => item.enabled);
+  const chosen = $('provider_id').value;
+  const pool = chosen ? providers.filter(item => item.id === chosen) : providers;
+  const models = new Set();
+  pool.forEach(provider => {
+    const disabled = new Set(provider.disabled_models || []);
+    [...(provider.model_priority || []), ...(provider.models || []), provider.model]
+      .filter(Boolean).forEach(name => { if (!disabled.has(name)) models.add(name); });
+  });
+  const select = $('model_preference');
+  select.innerHTML = '<option value="">自动选择</option>' +
+    [...models].sort().map(name => '<option value="' + name + '">' + name + '</option>').join('');
+  select.value = models.has(state.model_preference) ? state.model_preference : '';
+}
+
+function fill() {
+  BOOLS.forEach(key => { $(key).checked = !!state[key]; });
+  NUMS.forEach(key => { $(key).value = state[key]; });
+  TEXTS.forEach(key => { $(key).value = state[key] == null ? '' : state[key]; });
+  $('allowed_groups').value = (state.allowed_groups || []).join(', ');
+  $('ai-state').textContent = (state.shared_ai_status || {}).message || '';
+  renderBanners(); renderRoots(); renderProviders();
+}
+
+function collect() {
+  const patch = {};
+  BOOLS.forEach(key => { patch[key] = $(key).checked; });
+  NUMS.forEach(key => { patch[key] = Number($(key).value); });
+  TEXTS.forEach(key => { patch[key] = $(key).value; });
+  patch.provider_id = $('provider_id').value;
+  patch.model_preference = $('model_preference').value;
+  patch.allowed_groups = $('allowed_groups').value.split(/[,，\s]+/).filter(Boolean);
+  patch.roots = (state.roots || []).map(item => ({
+    ...item,
+    enabled: document.querySelector('[data-root="' + item.id + '"]').checked,
+  }));
+  return patch;
+}
+
+async function loadStats() {
+  try {
+    const data = await call('GET', '/stats');
+    $('stats').innerHTML = [
+      ['games', '收录游戏'], ['roots', '可检索范围'],
+      ['questions_today', '今日提问'], ['users_today', '今日用户'],
+      ['questions_total', '累计提问'], ['answers_total', '累计成功'],
+      ['failures_total', '累计失败'], ['tool_calls_total', '累计工具调用'],
+      ['active_contexts', '活跃会话'],
+    ].map(([key, label]) =>
+      '<div class="stat"><b>' + (data[key] ?? 0) + '</b><span>' + label + '</span></div>').join('');
+    $('source-hint').textContent = '当前接口：' + data.provider + '　模型：' + data.model;
+  } catch (error) { /* 统计失败不影响配置编辑 */ }
+}
+
+async function loadGames(keyword) {
+  try {
+    const items = await call('GET', '/games?keyword=' + encodeURIComponent(keyword || ''));
+    document.querySelector('#games tbody').innerHTML = items.map(item =>
+      '<tr><td>' + item.name + '</td><td><code>' + item.dir + '</code></td><td>' +
+      (item.has_rule ? '✅' : '—') + '</td><td>' + (item.desc || '').slice(0, 60) + '</td></tr>'
+    ).join('') || '<tr><td colspan="4" style="color:#7b8291">没有游戏</td></tr>';
+  } catch (error) { /* 同上 */ }
+}
+
+async function load() {
+  state = await call('GET', '/config');
+  fill();
+  await Promise.all([loadStats(), loadGames('')]);
+}
+
+$('save').onclick = async () => {
+  $('save').disabled = true;
+  try {
+    state = await call('PUT', '/config', collect());
+    fill();
+    await loadStats();
+    toast('已保存');
+  } catch (error) { toast(error.message, true); }
+  $('save').disabled = false;
+};
+$('reload').onclick = () => load().then(() => toast('已重新载入')).catch(e => toast(e.message, true));
+$('prune').onclick = async () => {
+  try {
+    const data = await call('DELETE', '/context', {});
+    toast('已清理 ' + data.deleted + ' 条过期上下文');
+    await loadStats();
+  } catch (error) { toast(error.message, true); }
+};
+$('provider_id').onchange = renderModels;
+$('refresh-games').onclick = async () => {
+  try {
+    const data = await call('POST', '/games/refresh', {});
+    await loadGames($('game-search').value);
+    await loadStats();
+    toast('索引已重建，共 ' + data.count + ' 个游戏');
+  } catch (error) { toast(error.message, true); }
+};
+let timer = null;
+$('game-search').oninput = () => {
+  clearTimeout(timer);
+  timer = setTimeout(() => loadGames($('game-search').value), 250);
+};
+$('probe').onclick = async () => {
+  const out = $('probe-out');
+  let args;
+  try { args = JSON.parse($('probe-args').value || '{}'); }
+  catch (error) { toast('参数不是合法 JSON', true); return; }
+  out.style.display = 'block';
+  out.textContent = '执行中…';
+  try {
+    const data = await call('POST', '/probe', {tool: $('probe-tool').value, arguments: args});
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch (error) { out.textContent = '失败: ' + error.message; }
+};
+
+load().catch(error => toast(error.message, true));
+</script>
+</body>
+</html>

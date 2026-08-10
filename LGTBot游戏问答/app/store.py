@@ -1,0 +1,202 @@
+"""SQLite 存储：追问上下文、每日用量、累计统计。
+
+用量必须落盘 —— 只放内存的话，插件一热重载每日上限就归零，等于没有上限。
+
+所有函数都是同步阻塞的，调用方一律用 asyncio.to_thread 包起来（见 main.py）。
+连接开在 check_same_thread=False + 单锁串行，避免线程池里多线程并发写。
+"""
+from __future__ import annotations
+
+import os
+import sqlite3
+import threading
+import time
+
+_lock = threading.Lock()
+_conn: sqlite3.Connection | None = None
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope      TEXT    NOT NULL,
+    role       TEXT    NOT NULL,
+    content    TEXT    NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_scope ON messages(scope, id);
+
+CREATE TABLE IF NOT EXISTS usage (
+    user_id  TEXT    NOT NULL,
+    day      TEXT    NOT NULL,
+    count    INTEGER NOT NULL DEFAULT 0,
+    last_ts  REAL    NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS counters (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+def connect(data_dir: str) -> None:
+    global _conn
+    with _lock:
+        if _conn is not None:
+            return
+        os.makedirs(data_dir, exist_ok=True)
+        _conn = sqlite3.connect(
+            os.path.join(data_dir, 'qa.db'), check_same_thread=False,
+        )
+        _conn.row_factory = sqlite3.Row
+        _conn.execute('PRAGMA journal_mode=WAL')
+        _conn.executescript(_SCHEMA)
+        _conn.commit()
+
+
+def close() -> None:
+    global _conn
+    with _lock:
+        if _conn is not None:
+            _conn.close()
+            _conn = None
+
+
+def _db() -> sqlite3.Connection:
+    if _conn is None:
+        raise RuntimeError('存储尚未初始化')
+    return _conn
+
+
+# ==================== 上下文 ====================
+
+
+def append(scope: str, role: str, content: str, keep: int) -> int:
+    """写入一条消息并裁掉超出 keep 的旧记录，返回新消息 id。"""
+    with _lock:
+        db = _db()
+        cursor = db.execute(
+            'INSERT INTO messages (scope, role, content, created_at) VALUES (?, ?, ?, ?)',
+            (scope, role, content, int(time.time())),
+        )
+        db.execute(
+            'DELETE FROM messages WHERE scope = ? AND id NOT IN '
+            '(SELECT id FROM messages WHERE scope = ? ORDER BY id DESC LIMIT ?)',
+            (scope, scope, max(1, int(keep))),
+        )
+        db.commit()
+        return int(cursor.lastrowid)
+
+
+def remove(message_id: int) -> None:
+    """回滚刚写入的用户消息（模型调用失败时用，避免留下没有答复的半截对话）。"""
+    with _lock:
+        db = _db()
+        db.execute('DELETE FROM messages WHERE id = ?', (int(message_id),))
+        db.commit()
+
+
+def history(scope: str, limit: int, expire_seconds: int) -> list[dict]:
+    """按时间正序返回最近 limit 条未过期消息。"""
+    if limit <= 0:
+        return []
+    floor = int(time.time()) - max(60, int(expire_seconds))
+    with _lock:
+        rows = _db().execute(
+            'SELECT role, content FROM messages WHERE scope = ? AND created_at >= ? '
+            'ORDER BY id DESC LIMIT ?',
+            (scope, floor, int(limit)),
+        ).fetchall()
+    return [{'role': row['role'], 'content': row['content']} for row in reversed(rows)]
+
+
+def clear(scope: str) -> int:
+    with _lock:
+        db = _db()
+        cursor = db.execute('DELETE FROM messages WHERE scope = ?', (scope,))
+        db.commit()
+        return cursor.rowcount
+
+
+def prune_expired(expire_seconds: int) -> int:
+    floor = int(time.time()) - max(60, int(expire_seconds))
+    with _lock:
+        db = _db()
+        cursor = db.execute('DELETE FROM messages WHERE created_at < ?', (floor,))
+        db.execute('DELETE FROM usage WHERE day < ?', (_day(-30),))
+        db.commit()
+        return cursor.rowcount
+
+
+# ==================== 用量 ====================
+
+
+def _day(offset: int = 0) -> str:
+    return time.strftime('%Y-%m-%d', time.localtime(time.time() + offset * 86400))
+
+
+def usage_of(user_id: str) -> dict:
+    with _lock:
+        row = _db().execute(
+            'SELECT count, last_ts FROM usage WHERE user_id = ? AND day = ?',
+            (user_id, _day()),
+        ).fetchone()
+    return {
+        'count': int(row['count']) if row else 0,
+        'last_ts': float(row['last_ts']) if row else 0.0,
+    }
+
+
+def record_usage(user_id: str) -> int:
+    """计数 +1 并刷新最后一次提问时间，返回今日累计次数。"""
+    day, now = _day(), time.time()
+    with _lock:
+        db = _db()
+        db.execute(
+            'INSERT INTO usage (user_id, day, count, last_ts) VALUES (?, ?, 1, ?) '
+            'ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1, last_ts = excluded.last_ts',
+            (user_id, day, now),
+        )
+        row = db.execute(
+            'SELECT count FROM usage WHERE user_id = ? AND day = ?', (user_id, day),
+        ).fetchone()
+        db.commit()
+        return int(row['count']) if row else 1
+
+
+def bump(key: str, amount: int = 1) -> None:
+    with _lock:
+        db = _db()
+        db.execute(
+            'INSERT INTO counters (key, value) VALUES (?, ?) '
+            'ON CONFLICT(key) DO UPDATE SET value = value + excluded.value',
+            (key, int(amount)),
+        )
+        db.commit()
+
+
+def stats() -> dict:
+    with _lock:
+        db = _db()
+        counters = {
+            row['key']: int(row['value'])
+            for row in db.execute('SELECT key, value FROM counters').fetchall()
+        }
+        today = db.execute(
+            'SELECT COALESCE(SUM(count), 0) AS total, COUNT(*) AS users '
+            'FROM usage WHERE day = ?', (_day(),),
+        ).fetchone()
+        contexts = db.execute(
+            'SELECT COUNT(DISTINCT scope) AS scopes, COUNT(*) AS messages FROM messages',
+        ).fetchone()
+    return {
+        'questions_total': counters.get('questions', 0),
+        'answers_total': counters.get('answers', 0),
+        'failures_total': counters.get('failures', 0),
+        'tool_calls_total': counters.get('tool_calls', 0),
+        'questions_today': int(today['total']),
+        'users_today': int(today['users']),
+        'active_contexts': int(contexts['scopes']),
+        'stored_messages': int(contexts['messages']),
+    }
