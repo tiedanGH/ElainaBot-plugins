@@ -84,10 +84,13 @@ _ALIAS = {
 _CRITERIA = {
     'origin': ('原作标注 (从宽)',
                'rule.md 存在原作标注即算满足, 标注内容不要求指向已有作品 —— 开发者原创游戏是正常的。\n'
-               '本库惯例是 `- **原作：** <名字>`: 名字为开发者或社区昵称表示原创; 也可以是被改编作品的作者或作品名。两类都算满足。\n'
-               '仅两种情形记为 origin 问题: ① rule.md 找不到任何 原作/作者/出处/原创/改编自/取材于 标注; '
-               '② 游戏明显源自可辨认的知名作品 (五子棋、斗地主、UNO、狼人杀等), '
-               '而标注既未提到该作品、也无「改编自 X」字样, 需补注明改编来源。\n'
+               '本库惯例是 `- **原作：** <名字>`, 通常就在 rule.md 开头几行: 名字为开发者或社区昵称表示原创; '
+               '也可以是被改编作品的作者或作品名。两类都算满足。\n'
+               '仅两种情形记为 origin 问题: ① rule.md 里确实一行 原作/作者/出处/原创/改编自/取材于 都找不到; '
+               '② 游戏明显源自可辨认的知名作品, 而标注里既没出现该作品的名字、也没有「改编自 X」字样。\n'
+               '关于②: 标注里**只要出现了作品名就算已注明**, 不需要「改编自」三个字。\n'
+               '**判 origin 不通过前必须先取证**: 先在 rule.md 里逐行找上述字样, reason 里要么原样引用你找到的那一行并说明为什么它仍不满足, 要么明确交代整份 rule.md 一行都没有。'
+               '禁止在没查过、引用不出原文的情况下断言「缺少原作标注」。\n'
                '本条从宽: 只要有原作标注即默认满足; 无法确定是否改编、或说不出具体被改编作品名时, '
                '按满足处理。原作填人名而非作品名, 属正常写法。'),
     'compliance': ('内容合规审查 (QQ 青少年保护方案, 从严判定)',
@@ -179,16 +182,52 @@ _ORIGIN_EXC = ' —— 但「原作标注」这条例外, 它从宽, 依其自�
 
 _CN_NUM = ('一', '二', '三', '四', '五')
 
+# 原作标注的确定性检测: rule 文件里出现这些字样, 标准一的情形①(完全没有标注)
+# 就客观不成立。实测过一次 love_letter 误判, 模型仍以「缺少 rule.md 原作标注」判 origin。
+# 光靠提示词约束治不住这类幻觉, 所以把这个事实**在本地算好**再告诉模型。
+_ORIGIN_MARK_RE = re.compile(r'原作|作者|出处|原创|改编自|取材于')
+
+
+def count_origin_marks(pkg: dict) -> int:
+    """扫 rule 文件里的原作标注字样, 返回命中行数 (0 = 确实一行都没有)。
+
+    只回传一个计数, **不把原文抄进系统提示词** —— rule.md 是上传者完全可控的
+    不可信内容, 把它的片段挪进可信段落等于自己开一个注入口子 (见模块 docstring L3)。
+    """
+    rule_paths = {str(p).lower() for p in (pkg.get('rule_files') or [])}
+    hits = 0
+    for t in pkg.get('texts') or []:
+        if str(t.get('path') or '').lower() not in rule_paths:
+            continue
+        hits += sum(1 for line in (t.get('content') or '').split('\n')
+                    if _ORIGIN_MARK_RE.search(line))
+    return hits
+
+
+def _origin_scan_block(hits: int) -> str:
+    """把本地扫描结论作为可信事实写进系统提示词。"""
+    if hits:
+        return ('【本地预扫描 · 原作标注】系统已用确定性规则在 rule 文件中检出 '
+                f'{hits} 行含 原作/作者/出处/原创/改编自/取材于 字样。这是客观事实: '
+                '标准一的情形①(一行标注都找不到)**已被排除**, 你**不得**以「缺少原作标注」'
+                '「未找到 rule.md 的原作字段」为由判 origin。只有情形②(明显改编自知名作品, '
+                '且标注里没出现该作品名) 成立时才可以判 origin。')
+    return ('【本地预扫描 · 原作标注】系统用确定性规则扫过 rule 文件, '
+            '**未检出**任何 原作/作者/出处/原创/改编自/取材于 字样。')
+
 
 def criteria_keys(mode: str) -> tuple:
     """本次审核适用的标准 (也就是允许出现的拒绝分类)。"""
     return FILE_CRITERIA if mode == 'file' else ARCHIVE_CRITERIA
 
 
-def build_system_prompt(mode: str, extra: str = '', nonce: str = '') -> str:
+def build_system_prompt(mode: str, extra: str = '', nonce: str = '',
+                        origin_marks: int | None = None) -> str:
     """按上传模式拼装系统提示词: 不适用的标准根本不进提示词。
 
     ``nonce`` 为本次请求的校验值, 同时用于定界符声明与输出回显 (见模块 docstring L2/L4)。
+    ``origin_marks`` 为 ``count_origin_marks`` 的本地扫描结果, 给出后会附一段可信事实,
+    堵死「rule.md 明明有标注却被判缺少标注」这类幻觉; 单文件模式不含标准一, 会被忽略。
     面板的「补充要求」由管理员填写, 属可信来源, 但仍排在安全规则之后, 不能覆盖它。
     """
     keys = criteria_keys(mode)
@@ -197,6 +236,8 @@ def build_system_prompt(mode: str, extra: str = '', nonce: str = '') -> str:
     for i, key in enumerate(keys):
         title, body = _CRITERIA[key]
         parts.append(f'【标准{_CN_NUM[i]} · {title}】\n{body}')
+    if 'origin' in keys and origin_marks is not None:
+        parts.append(_origin_scan_block(origin_marks))
     cats = ' | '.join(f'"{k}"' for k in keys + _EXTRA_CATEGORIES)
     parts.append(_OUTPUT_FORMAT.format(cats=cats, n=len(keys), nonce=nonce,
                                        origin_exc=_ORIGIN_EXC if 'origin' in keys else '。'))
@@ -573,7 +614,8 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
 
     nonce = secrets.token_hex(8)
     messages = [
-        {'role': 'system', 'content': build_system_prompt(mode, cfg.get('review_prompt'), nonce)},
+        {'role': 'system', 'content': build_system_prompt(
+            mode, cfg.get('review_prompt'), nonce, count_origin_marks(pkg))},
         {'role': 'user', 'content': _build_digest(pkg, meta, nonce)},
     ]
     resp, info = await _post(messages, cfg)

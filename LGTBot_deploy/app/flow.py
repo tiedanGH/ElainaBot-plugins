@@ -418,7 +418,8 @@ async def _review_with_retry(event, cfg: dict, pkg: dict, meta: dict, record: di
                     f'{review.status_text(result)}): {result["error"]}')
         if attempt >= _REVIEW_ATTEMPTS:
             return result
-        await _send(event, _retry_text(record, result, attempt))
+        # 走主动消息: 第一次重试提示就可能在 180s 审核超时之后, 第二次更是累计 7 分钟往上, 被动消息 ID 的 5 分钟有效期基本已过。
+        await _send(event, _retry_text(record, result, attempt), active=True)
         await asyncio.sleep(_REVIEW_RETRY_WAIT)
     return result
 
@@ -584,7 +585,9 @@ async def _finish_reject(event, cfg: dict, record: dict, result: dict):
     at = _mentions(cfg, record)
     if at:
         lines.append(at + ' 请人工复核')
-    await _send(event, '\n'.join(lines))
+    # 审核结论一律走主动消息: 服务异常路径最长要跑 3 次尝试 + 2 次 60s 等待
+    # (累计十分钟往上), 正常审核也可能耗时 180s, 被动消息 ID 多半已失效。
+    await _send(event, '\n'.join(lines), active=True)
 
 
 _DEPLOY_HEAD = {
