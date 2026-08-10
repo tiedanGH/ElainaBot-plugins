@@ -1,8 +1,9 @@
-"""内容审核 — 调用 OpenAI 兼容接口对上传内容做合规判定 (纯文本, 不送图片)。
+"""内容审核 — 走框架的 LLM 中央模块对上传内容做合规判定 (纯文本, 不送图片)。
 
-接口调用形式沿用框架内 AI 开发插件 (``plugins/AI开发插件/app/relay.py``):
-``POST {base_url}/chat/completions`` + ``Authorization: Bearer <key>``。这里不带
-任何工具调用, 只要一次判定结果。
+接口、API Key、模型目录、优先级与故障切换统一由 ``modules/ai_llm`` 管理, 本插件
+只提交消息 (见 ``app/central.py``), **不保存任何接口地址与密钥**; 配置里只留
+``provider_id`` / ``model`` 两个选择, 留空即交给中央自动选。审核是一次性结构化
+判定, 不开中央的运行时工具, 也不让中央裁剪上下文。
 
 **送审内容只有文字**: 文件清单 + 文本文件内容。图片/字体等二进制资源不上送,
 版权标准也只依据文字判断 —— 图片来源未知**不构成**版权拒绝理由 (deepseek 等
@@ -16,7 +17,7 @@
 
 **判定结果只取结构化 JSON 里的 verdict / categories**, 模型的自然语言说明与
 思考过程一律不进入群消息, 由 store.py 落盘到 data/reviews/。任何异常
-(HTTP 失败 / 超时 / 非 JSON / 字段缺失) 都返回 ``verdict='reject'`` +
+(中央不可用 / 上游 HTTP 失败 / 超时 / 非 JSON / 字段缺失) 都返回 ``verdict='reject'`` +
 ``manual=True``, 即「默认不通过, 需人工处理」, 并附带 ``http_status`` /
 ``error_kind`` / ``retryable`` 供上层展示与重试 (重试编排在 flow.py, 见
 ``_review_with_retry``: 共 3 次尝试, 耗尽才 @ 开发者)。
@@ -53,9 +54,7 @@ import re
 import secrets
 import time
 
-import aiohttp
-
-from . import config
+from . import central
 
 # 拒绝分类 → 群内展示名
 CATEGORY_LABELS = {
@@ -516,56 +515,15 @@ def _norm_findings(value, allowed: tuple) -> list:
     return out[:20]
 
 
-# 配置缺失属永久性失败, 重试毫无意义 (见 review() 里的 retryable)
-_KIND_CONFIG = '未配置接口密钥'
-
-
-def _fail(error: str, status: int | None, kind: str) -> dict:
-    """``_post`` 的失败信息。
-
-    ``status`` 只有真的收到过 HTTP 响应才有值 (网络异常/超时为 None); ``kind`` 是
-    给群消息用的简短描述 —— 有状态码时用不上, 没有状态码时代替它说明失败在哪。
-    """
-    return {'error': error, 'status': status, 'kind': kind}
-
-
-async def _post(messages: list, cfg: dict) -> tuple[dict | None, dict]:
-    """单次 /chat/completions 调用, 返回 (响应 JSON, 失败信息)。成功时失败信息为空壳。"""
-    key = config.api_key()
-    if not key:
-        return None, _fail(_KIND_CONFIG, None, _KIND_CONFIG)
-    url = config.base_url() + '/chat/completions'
-    payload = {
-        'model': cfg.get('model') or 'gpt-4.1-nano',
-        'messages': messages,
-        'temperature': cfg.get('temperature', 0.2),
-    }
-    headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
-    timeout = aiohttp.ClientTimeout(total=max(30, int(cfg.get('request_timeout', 180))))
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            for attempt in range(2):
-                async with s.post(url, json=payload, headers=headers) as resp:
-                    text = await resp.text()
-                    if resp.status == 200:
-                        try:
-                            return json.loads(text), _fail('', 200, '')
-                        except json.JSONDecodeError:
-                            return None, _fail(f'上游返回非 JSON: {text[:200]}', 200, '')
-                    # 个别推理模型拒绝自定义 temperature: 去掉后重试一次
-                    if attempt == 0 and resp.status == 400 and 'temperature' in text.lower():
-                        payload.pop('temperature', None)
-                        continue
-                    return None, _fail(f'HTTP {resp.status}: {text[:300]}', resp.status, '')
-    except Exception as e:  # noqa: BLE001 — 网络异常一律按「不通过, 需人工」处理
-        return None, _fail(f'{type(e).__name__}: {e}', None, type(e).__name__)
-    return None, _fail('调用失败', None, '调用失败')
-
-
 def status_text(result: dict) -> str:
-    """审核异常的简短状态串 (群消息用): 收到过 HTTP 响应就报状态码, 否则报错误类型。"""
+    """审核异常的简短状态串 (群消息用): 上游给过 HTTP 状态码就报它, 否则报错误类型。"""
     st = result.get('http_status')
     return f'HTTP {st}' if isinstance(st, int) else (result.get('error_kind') or '无 HTTP 响应')
+
+
+def _retryable(kind: str) -> bool:
+    """中央模块未安装 / 未启用 / 没有可用接口, 属配置问题, 重试 3 次也没救。"""
+    return not any(word in (kind or '') for word in ('未安装', '未启用', '没有可用'))
 
 
 def _injection_report(hits: list) -> str:
@@ -612,26 +570,23 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
                 'findings': [{k: h[k] for k in ('category', 'target', 'line', 'suspect')}
                              for h in hits]}
 
+    # 系统提示词单独交给中央的 system_prompt 参数, 不塞进 messages ——
+    # 中央会把它与自己的 runtime_prompt 合并后放到系统位, 两边都写就重复了。
     nonce = secrets.token_hex(8)
-    messages = [
-        {'role': 'system', 'content': build_system_prompt(
-            mode, cfg.get('review_prompt'), nonce, count_origin_marks(pkg))},
-        {'role': 'user', 'content': _build_digest(pkg, meta, nonce)},
-    ]
-    resp, info = await _post(messages, cfg)
+    system_prompt = build_system_prompt(mode, cfg.get('review_prompt'), nonce,
+                                        count_origin_marks(pkg))
+    messages = [{'role': 'user', 'content': _build_digest(pkg, meta, nonce)}]
+    resp, info = await central.complete(messages, system_prompt, cfg)
     base['elapsed'] = round(time.time() - start, 1)
     base['error'] = info['error']
     base['http_status'] = info['status']
     base['error_kind'] = info['kind']
-    base['retryable'] = info['kind'] != _KIND_CONFIG
+    base['retryable'] = _retryable(info['kind'])
     if resp is None:
         return base
 
-    choice = (resp.get('choices') or [{}])[0]
-    msg = choice.get('message') or {}
-    raw = msg.get('content') or ''
-    base['raw'] = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
-    base['model'] = resp.get('model') or base['model']
+    base['raw'] = resp['text']
+    base['model'] = resp['model'] or base['model']
     data = _extract_json(base['raw'])
     if data is None:
         base['error'] = '无法从回复中解析出审核结论 JSON'
@@ -675,11 +630,3 @@ async def review(pkg: dict, meta: dict, cfg: dict) -> dict:
     }
 
 
-async def probe() -> dict:
-    """面板「测试连接」: 用一句最小请求验证密钥/地址/模型可用。"""
-    cfg = config.all_config()
-    resp, info = await _post([{'role': 'user', 'content': '回复 ok'}], cfg)
-    if resp is None:
-        return {'ok': False, 'error': info['error'], 'http_status': info['status']}
-    text = ((resp.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
-    return {'ok': True, 'model': resp.get('model') or cfg.get('model', ''), 'reply': str(text)[:100]}

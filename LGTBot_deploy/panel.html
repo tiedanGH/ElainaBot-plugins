@@ -136,26 +136,22 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
     </div>
 
     <div class="card">
-      <h3>审核接口 <span class="hint">OpenAI 兼容接口；密钥留空则沿用 settings.yaml 的 ai.api_key / 环境变量</span></h3>
+      <h3>审核模型 <span class="hint" id="ai-state">接口与密钥由框架的「AI LLM」中央模块统一管理，本插件只保存选择</span></h3>
       <div class="row">
         <div class="field" style="flex:2">
-          <label>接口地址 base_url</label>
-          <input id="base_url" class="mono" placeholder="https://api.example.com/v1">
+          <label>接口 <button class="btn-link" onclick="loadModels()">同步模型目录</button></label>
+          <select id="provider_id"></select>
         </div>
         <div class="field" style="flex:2">
-          <label>密钥 api_key <span class="hint" id="key-state"></span></label>
-          <input id="api_key" type="password" placeholder="留空表示不修改">
-        </div>
-      </div>
-      <div class="row" style="margin-top:14px">
-        <div class="field" style="flex:2">
-          <label>模型 <button class="btn-link" onclick="loadModels()">获取模型列表</button></label>
-          <input id="model" class="mono" list="model-list" placeholder="gpt-4.1-nano">
-          <datalist id="model-list"></datalist>
+          <label>模型</label>
+          <select id="model"></select>
         </div>
         <div class="field" style="max-width:120px"><label>温度</label><input id="temperature" type="number" min="0" max="2" step="0.1"></div>
-        <div class="field" style="max-width:130px"><label>超时(秒)</label><input id="request_timeout" type="number" min="30" max="600" step="10"></div>
         <button class="btn btn-line" id="btn-test" onclick="testConn()">测试连接</button>
+      </div>
+      <div class="hint" style="margin-top:10px">
+        两项都留「自动选择」时，由中央模块按接口优先级与模型优先级自动挑选并在失败时故障切换。
+        接口地址、API Key、模型目录一律在<b>「AI LLM」面板</b>维护，本插件不保存密钥。
       </div>
       <div class="grid2" style="margin-top:14px">
         <label class="switch"><input type="checkbox" id="review_enabled"> 启用内容审核（关闭后直接部署，仅供上游故障应急）</label>
@@ -308,8 +304,8 @@ const baseMatch=location.pathname.match(/^(.*)\/api\/web-pages\//);
 const API=(baseMatch?baseMatch[1]:'')+'/api/ext/lgtbotdeploy';
 
 const BOOLS=['enabled','keep_replaced_backup','review_enabled','keep_archive','compile_enabled'];
-const NUMS=['temperature','request_timeout','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget','compile_timeout'];
-const TEXTS=['upload_dir','base_url','model','review_prompt','compile_url'];
+const NUMS=['temperature','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget','compile_timeout'];
+const TEXTS=['upload_dir','review_prompt','compile_url'];
 const LISTS=['allowed_groups','notify_users','required_files'];
 const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',integrity:'包不完整',review:'审核',deploy:'部署失败',deployed:'已上传',error:'异常',cancelled:'已取消'};
 
@@ -346,12 +342,10 @@ function renderConfig(){
   BOOLS.forEach(k=>$(k).checked=!!CFG[k]);
   NUMS.concat(TEXTS).forEach(k=>{if($(k))$(k).value=CFG[k]??''});
   LISTS.forEach(k=>$(k).value=(CFG[k]||[]).join('\n'));
-  $('api_key').value='';
-  const src=CFG.api_key_source;
-  $('key-state').textContent=src==='plugin'?'（已在本插件配置）':src==='inherit'?'（继承框架 ai 配置）':'（未配置）';
   $('compile_key').value='';
   $('compile-key-state').textContent=CFG.compile_key_set?'（已配置）':'（未配置）';
-  const ready=CFG.enabled&&CFG.api_key_set&&(CFG.allowed_groups||[]).length&&CFG.upload_dir;
+  renderAI();
+  const ready=CFG.enabled&&(CFG.ai_status||{}).ready&&(CFG.allowed_groups||[]).length&&CFG.upload_dir;
   $('state-badge').textContent=ready?'配置就绪':'配置未完成';
   $('state-badge').style.color=ready?'':'var(--warn)';
 }
@@ -366,8 +360,8 @@ function collect(){
   NUMS.forEach(k=>body[k]=Number($(k).value||0));
   TEXTS.forEach(k=>body[k]=$(k).value.trim());
   LISTS.forEach(k=>body[k]=$(k).value.split(/[\s,，]+/).map(s=>s.trim()).filter(Boolean));
-  const key=$('api_key').value.trim();
-  if(key)body.api_key=key;
+  body.provider_id=$('provider_id').value;
+  body.model=$('model').value;
   const ckey=$('compile_key').value.trim();
   if(ckey)body.compile_key=ckey;
   return body;
@@ -382,19 +376,46 @@ async function saveConfig(){
   if(!CFG.upload_dir)msg+='<br>⚠️ 尚未填写 lgtbot 上传目录，/upload 暂不可用';
   show($('save-result'),true,msg);
 }
+/* 接口与模型目录来自中央 AI LLM 模块，不可手输 */
+function aiProviders(){return (CFG.ai_providers||[]).filter(p=>p.enabled)}
+function aiModels(p){
+  const off=new Set((p?.disabled_models||[]).map(String));
+  return [...new Set([...(p?.model_priority||[]),...(p?.models||[]),p?.model]
+    .map(v=>String(v||'').trim()).filter(v=>v&&!off.has(v)))];
+}
+function fillModelOptions(){
+  const p=aiProviders().find(x=>x.id===$('provider_id').value);
+  const list=p?aiModels(p):[...new Set(aiProviders().flatMap(aiModels))];
+  const cur=CFG.model||'';
+  $('model').innerHTML='<option value="">自动选择（按模型优先级）</option>'
+    +list.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+  $('model').value=list.includes(cur)?cur:'';
+}
+function renderAI(){
+  const st=CFG.ai_status||{},list=aiProviders();
+  $('ai-state').textContent=st.ready?('中央 AI LLM 已就绪，共 '+list.length+' 个可用接口')
+    :(st.message||'中央 AI LLM 不可用');
+  $('ai-state').style.color=st.ready?'':'var(--warn)';
+  $('provider_id').innerHTML='<option value="">自动选择（按接口优先级）</option>'
+    +list.map(p=>`<option value="${esc(p.id)}">${esc(p.name||p.id)}</option>`).join('');
+  $('provider_id').value=list.some(p=>p.id===CFG.provider_id)?CFG.provider_id:'';
+  fillModelOptions();
+  ['provider_id','model','temperature','btn-test'].forEach(k=>{if($(k))$(k).disabled=!st.installed});
+}
 async function loadModels(){
-  const r=await api('/models?base_url='+encodeURIComponent($('base_url').value.trim()));
-  if(!r.success)return toast(r.error||'获取失败');
-  $('model-list').innerHTML=(r.models||[]).map(m=>`<option value="${esc(m)}"></option>`).join('');
-  toast('已获取 '+(r.models||[]).length+' 个模型');
+  const r=await api('/models?provider_id='+encodeURIComponent($('provider_id').value));
+  if(!r.success)return toast(r.error||'同步失败');
+  CFG.ai_providers=r.providers||[];renderAI();
+  const errs=Object.values(r.errors||{});
+  toast(errs.length?'模型目录已同步，部分接口失败':'模型目录已同步');
 }
 async function testConn(){
   const btn=$('btn-test');setBusy(btn,true);
   const r=await api('/test','POST',{});
   setBusy(btn,false,'测试连接');
   show($('test-result'),r.success,r.success
-    ?`✅ 接口可用，模型 <code>${esc(r.model||'')}</code>，返回：${esc(r.reply||'')}`
-    :'❌ 接口不可用: '+esc(r.error||''));
+    ?`✅ 中央 AI LLM 可用，模型 <code>${esc(r.model||'')}</code>，返回：${esc(r.reply||'')}`
+    :'❌ 中央 AI LLM 不可用: '+esc(r.error||''));
 }
 
 /* ==================== 审核记录 ==================== */
@@ -611,6 +632,7 @@ async function delFile(path,isBackup){
 function closeModal(){$('modal-mask').classList.remove('show')}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
 
+$('provider_id').onchange=()=>{CFG.model='';fillModelOptions()};
 loadConfig();loadRecords();
 </script>
 </body>

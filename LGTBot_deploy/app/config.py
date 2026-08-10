@@ -1,8 +1,11 @@
 """插件配置读写 (data/config.yaml)。
 
 面板与指令共用同一份配置, 全部字段都可在 Web 面板「LGTBot 自动部署」页修改。
-密钥留空时按 aidev 的优先级链回退: 本插件配置 > settings.yaml 的 ai.* > 环境变量,
-方便与框架内 AI 开发插件共用同一个中转站。
+
+审核走框架的 LLM 中央模块 (modules/ai_llm), 本插件**不保存接口地址与 API Key** ——
+只存 ``provider_id`` / ``model`` 两个选择, 取值必须来自中央模块的公开配置
+(见 app/central.py)。旧版的 base_url / api_key / request_timeout 字段在下次落盘时
+自动丢弃 (_coerce 只保留 DEFAULTS 里的键)。
 """
 
 from __future__ import annotations
@@ -40,12 +43,10 @@ DEFAULTS = {
     'compile_url': '',           # 编译 API 地址, 留空 = 自动指向本机框架端口
     'compile_key': '',           # 编译 API token (LGTBot 面板「引擎编译」页复制)
     'compile_timeout': 180,      # 等待编译响应的秒数, 超时自动发送取消请求
-    # ---- 模型接口 (OpenAI 兼容) ----
-    'base_url': 'https://api.ytea.top/v1',
-    'api_key': '',
-    'model': 'gpt-4.1-nano',
+    # ---- 模型选择 (取自中央 AI LLM 模块, 本插件不存地址与密钥) ----
+    'provider_id': '',           # 留空 = 按中央的接口优先级自动选
+    'model': '',                 # 留空 = 按中央的模型优先级自动选
     'temperature': 0.2,
-    'request_timeout': 180,
     # ---- 限额 ----
     'max_archive_mb': 50,        # 压缩包体积上限
     'max_uncompressed_mb': 200,  # 解压后总体积上限
@@ -54,7 +55,7 @@ DEFAULTS = {
     'download_timeout': 60,      # 下载超时 (秒)
 }
 
-# 面板可写字段 (api_key 单独处理: 空串=不修改)
+# 面板可写字段 (compile_key 单独处理: 空串=不修改)
 WRITABLE = tuple(DEFAULTS.keys())
 
 _COMMENTS = {
@@ -71,11 +72,9 @@ _COMMENTS = {
     'compile_url': '编译 API 地址, 留空 = 自动指向本机框架端口',
     'compile_key': '编译 API token (LGTBot 面板「引擎编译」页复制)',
     'compile_timeout': '等待编译响应的秒数, 超时自动取消编译',
-    'base_url': 'OpenAI 兼容接口地址',
-    'api_key': '接口密钥, 留空则回退 settings.yaml 的 ai.api_key / 环境变量',
-    'model': '审核使用的模型',
+    'provider_id': '审核使用的接口 id (来自中央 AI LLM 模块), 留空 = 中央自动选择',
+    'model': '审核使用的模型 (来自中央 AI LLM 模块), 留空 = 中央自动选择',
     'temperature': '采样温度',
-    'request_timeout': '单次审核请求超时 (秒)',
     'max_archive_mb': '压缩包体积上限 (MB)',
     'max_uncompressed_mb': '解压后总体积上限 (MB)',
     'max_files': '解压后文件数上限',
@@ -86,13 +85,13 @@ _COMMENTS = {
 _lock = threading.Lock()
 _cache: dict | None = None
 
-_INT_FIELDS = ('request_timeout', 'max_archive_mb', 'max_uncompressed_mb',
-               'max_files', 'text_budget', 'download_timeout', 'compile_timeout')
+_INT_FIELDS = ('max_archive_mb', 'max_uncompressed_mb', 'max_files',
+               'text_budget', 'download_timeout', 'compile_timeout')
 _BOOL_FIELDS = ('enabled', 'keep_replaced_backup', 'keep_archive', 'review_enabled',
                 'compile_enabled')
 _LIST_FIELDS = ('allowed_groups', 'notify_users', 'required_files')
 # 密钥语义字段: 面板提交空串 = 不修改, null = 清除
-_SECRET_FIELDS = ('api_key', 'compile_key')
+_SECRET_FIELDS = ('compile_key',)
 
 
 def _coerce(data: dict) -> dict:
@@ -172,7 +171,7 @@ def all_config(refresh: bool = False) -> dict:
 
 
 def update(updates: dict) -> dict:
-    """合并写入面板提交的字段; api_key 传空串表示不修改, 传 null 表示清除。"""
+    """合并写入面板提交的字段; compile_key 传空串表示不修改, 传 null 表示清除。"""
     global _cache
     cur = all_config()
     with _lock:
@@ -192,31 +191,6 @@ def update(updates: dict) -> dict:
         return dict(data)
 
 
-def api_key() -> str:
-    """密钥解析链: 本插件配置 > settings.yaml 的 ai.api_key > 环境变量。"""
-    key = all_config().get('api_key') or ''
-    if not key:
-        try:
-            from core.base.config import cfg
-            key = cfg.get('settings', 'ai.api_key', '') or ''
-        except Exception:  # noqa: BLE001
-            key = ''
-    if not key:
-        key = os.environ.get('AI_DEV_API_KEY') or os.environ.get('OPENAI_API_KEY') or ''
-    return str(key)
-
-
-def base_url() -> str:
-    url = all_config().get('base_url') or DEFAULTS['base_url']
-    if not url:
-        try:
-            from core.base.config import cfg
-            url = cfg.get('settings', 'ai.base_url', '') or DEFAULTS['base_url']
-        except Exception:  # noqa: BLE001
-            url = DEFAULTS['base_url']
-    return str(url).rstrip('/')
-
-
 def is_group_allowed(group_id: str) -> bool:
     return bool(group_id) and group_id in all_config().get('allowed_groups', [])
 
@@ -228,12 +202,12 @@ def upload_target() -> dict:
 
 
 def public_config() -> dict:
-    """面板展示用配置 (不含密钥明文)。"""
+    """面板展示用配置 (不含密钥明文) + 中央 AI LLM 的状态与可选接口/模型。"""
+    from . import central
+
     data = all_config()
-    data.pop('api_key', None)
-    data['api_key_set'] = bool(api_key())
-    data['api_key_source'] = ('plugin' if all_config().get('api_key')
-                              else ('inherit' if api_key() else 'none'))
     data['compile_key_set'] = bool(data.pop('compile_key', ''))
     data['data_dir'] = DATA_DIR
+    data['ai_status'] = central.status()
+    data['ai_providers'] = central.public_config().get('providers', [])
     return data

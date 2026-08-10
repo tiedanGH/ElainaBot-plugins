@@ -9,7 +9,7 @@ from aiohttp import web
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.web_pages import register_route
 
-from . import config, deploy, review, store
+from . import central, config, deploy, review, store
 
 log = get_logger(PLUGIN, 'LGTBot_deploy')
 
@@ -57,31 +57,22 @@ async def _set_config(request: web.Request):
 
 
 async def _test_connection(request: web.Request):
-    """用一句最小请求验证密钥 / 地址 / 模型是否可用。"""
-    result = await review.probe()
+    """用一句最小请求验证中央 AI LLM 链路是否可用。"""
+    result = await central.probe()
     return web.json_response({'success': result.get('ok', False), **result})
 
 
 async def _get_models(request: web.Request):
-    """拉取上游模型列表 (可用 query 传临时 base_url/api_key 试连)。"""
-    import aiohttp
+    """让中央 AI LLM 重新同步模型目录, 回传最新的接口/模型供面板选择。
 
-    base = (request.query.get('base_url') or '').strip().rstrip('/') or config.base_url()
-    key = (request.query.get('api_key') or '').strip() or config.api_key()
-    if not key:
-        return web.json_response({'success': False, 'error': '未配置密钥', 'models': []})
+    本插件不再直连上游, 也不再持有密钥 —— 接口与密钥统一由中央模块管理。
+    """
+    provider_id = (request.query.get('provider_id') or '').strip()
     try:
-        timeout = aiohttp.ClientTimeout(total=20)
-        async with aiohttp.ClientSession(timeout=timeout) as s, \
-                s.get(base + '/models', headers={'Authorization': f'Bearer {key}'}) as r:
-            data = await r.json()
-        if not isinstance(data, dict) or 'data' not in data:
-            return web.json_response({'success': False, 'error': f'上游返回异常: {str(data)[:200]}',
-                                      'models': []})
-        models = sorted(m.get('id', '') for m in data.get('data', []) if m.get('id'))
-        return web.json_response({'success': True, 'models': models})
+        result = await central.refresh_models(provider_id)
     except Exception as e:  # noqa: BLE001
-        return web.json_response({'success': False, 'error': str(e), 'models': []})
+        return web.json_response({'success': False, 'error': str(e)[:300], 'providers': []})
+    return web.json_response({'success': True, **result})
 
 
 # ==================== 审核记录 ====================
