@@ -39,7 +39,7 @@ from core.base.logger import PLUGIN, get_logger, report_error
 from . import archive, config, deploy, quoted, review, store
 from . import compile as compilemod
 
-log = get_logger(PLUGIN, 'LGTBot_deploy')
+log = get_logger(PLUGIN, 'LGTBot自动部署')
 
 _tasks: set = set()
 # 「同时只处理一个上传」的占位标记。用同步标记而不是 asyncio.Lock:
@@ -270,7 +270,7 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str,
         _persist(record)
         raise
     except Exception as e:  # noqa: BLE001 — 兜底: 未预期异常也要给结论 + 留记录
-        report_error(PLUGIN, 'LGTBot_deploy', e,
+        report_error(PLUGIN, 'LGTBot自动部署', e,
                      context={'record': rid, 'group_id': event.group_id})
         record.update(stage='error', error=f'{type(e).__name__}: {e}')
         _persist(record)

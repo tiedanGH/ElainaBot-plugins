@@ -125,7 +125,7 @@ def _coerce(data: dict) -> dict:
 def _write(data: dict):
     """带注释落盘 (原子替换)。"""
     os.makedirs(DATA_DIR, exist_ok=True)
-    lines = ['# LGTBot_deploy 插件配置 — 可在 Web 面板「LGTBot 自动部署」页可视化修改', '']
+    lines = ['# LGTBot自动部署 插件配置 — 可在 Web 面板「LGTBot 自动部署」页可视化修改', '']
     for key, value in data.items():
         comment = _COMMENTS.get(key, '')
         if comment:

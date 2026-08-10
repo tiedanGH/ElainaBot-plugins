@@ -1,4 +1,4 @@
-"""LGTBot_deploy — LGTBot 自动部署插件: 引用文件消息 → 下载 → 内容审核 → 上传到 lgtbot 目录。
+"""LGTBot自动部署 — 自动部署插件: 引用文件消息 → 下载 → 内容审核 → 上传到 lgtbot 目录。
 
 用法 (指定群内所有人可用):
     /upload                    引用压缩包消息 → 解压到 <上传目录>/<压缩包名>/
@@ -81,7 +81,7 @@ __plugin_meta__ = {
     'version': '1.7.0',
 }
 
-log = get_logger(PLUGIN, 'LGTBot_deploy')
+log = get_logger(PLUGIN, 'LGTBot自动部署')
 
 _PAGE_KEY = 'lgtbot-deploy'
 _HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'panel.html')
@@ -120,7 +120,7 @@ async def _on_load():
         key=_PAGE_KEY,
         label='LGTBot 自动部署',
         source='plugin',
-        source_name='LGTBot_deploy',
+        source_name='LGTBot自动部署',
         icon=_ICON,
         html_file=_HTML_PATH,
     )

@@ -11,7 +11,7 @@ from core.plugin.web_pages import register_route
 
 from . import central, config, deploy, review, store
 
-log = get_logger(PLUGIN, 'LGTBot_deploy')
+log = get_logger(PLUGIN, 'LGTBot自动部署')
 
 PREFIX = '/api/ext/lgtbotdeploy'
 
