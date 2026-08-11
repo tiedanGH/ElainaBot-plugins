@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.7.3',
+    'version': '1.7.4',
     'license': 'MIT',
 }
 
@@ -109,6 +109,29 @@ async def _reply(event, text: str) -> None:
         if not content.startswith(mention):
             content = f'{mention}\n\n{content}'
     await event.reply(content)
+
+
+def _at_ok(event) -> bool:
+    """这条消息是否满足「@了本机器人」。
+
+    **只对 GROUP_MESSAGE_CREATE 卡 is_at_self**，不能对所有群消息都卡 ——
+    上一版就栽在这里，把非全量群的正常提问全挡住了：
+
+    · GROUP_AT_MESSAGE_CREATE：事件类型本身就代表用户 @ 了 bot。但 is_at_self
+      是从 payload 的 mentions 数组推出来的，而 QQ 官方 bot 的 AT_CREATE payload
+      **不一定带 mentions**（AT 信号在事件类型里，不在 payload 里重复），
+      硬卡这道闸会把这类流量全误挡。框架自己也是这个约定：
+      ``at_bot = event.is_at_self if 事件 == GROUP_MESSAGE_CREATE else True``
+      （core/bot/event.py:178，注释写着「非全量消息收不到未艾特消息, 一律算艾特」）。
+    · GROUP_MESSAGE_CREATE：全量群里的任意消息，只有 is_at_self 才是冲着机器人
+      来的，其余是日常聊天，必须挡掉。
+    · 私聊 / 频道私信：没有「@」概念，一律放行。
+
+    与 LGTBot 自己的消息派发同一套判据（mod/dispatcher.py 里那道闸）。
+    """
+    if str(getattr(event, 'event_type', '')) != 'GROUP_MESSAGE_CREATE':
+        return True
+    return bool(getattr(event, 'is_at_self', False))
 
 
 def _warn_swallow(event) -> None:
@@ -1030,8 +1053,9 @@ async def at_message(event, match) -> None:
         return
     if getattr(event, 'is_bot', False) or not _scene_allowed(event, current):
         return
-    # 群里必须真的 @ 了本机器人。私聊 / 频道私信没有「@」概念，不受此限。
-    if getattr(event, 'is_group', False) and not getattr(event, 'is_at_self', False):
+    # 群里必须冲着机器人来。判据见 _at_ok —— 只对全量事件卡 is_at_self，
+    # 对 GROUP_AT_MESSAGE_CREATE 硬卡会误挡（payload 不一定带 mentions）。
+    if not _at_ok(event):
         _warn_swallow(event)
         return
     question = str(match.group(1) or '').strip()

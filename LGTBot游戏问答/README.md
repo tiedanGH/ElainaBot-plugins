@@ -36,8 +36,26 @@ if is_non_at and not h.get('ignore_at_check', False) and not non_at_ok:
 **不设 `ignore_at_check` 不等于「只吃 @ 消息」** —— 全量群下 `non_at_ok` 为真，
 这条 `continue` 不执行，`at` 模式的 `.*` 兜底会匹配群里**每一条**消息。
 
-所以 `at_message` 函数体里强制复查一次 `is_at_self`（LGTBot 自己的消息派发也是
-这么做的）。私聊 / 频道私信没有「@」概念，不受此限。
+所以 `at_message` 函数体里自己再判一次（`_at_ok`，与 LGTBot 的消息派发同一套判据）。
+**关键是只对 `GROUP_MESSAGE_CREATE` 卡 `is_at_self`**，不能对所有群消息都卡：
+
+| 事件 | `is_at_self` | 放行 | 为什么 |
+|---|---|---|---|
+| `GROUP_AT_MESSAGE_CREATE` | 任意 | ✅ | 事件类型本身就代表 @ 了 bot |
+| `GROUP_MESSAGE_CREATE` | `False` | ❌ | 全量群的日常聊天 |
+| `GROUP_MESSAGE_CREATE` | `True` | ✅ | 全量群里冲着 bot 来的 |
+| 私聊 / 频道私信 | — | ✅ | 没有「@」概念 |
+
+`is_at_self` 是从 payload 的 `mentions` 数组推出来的，而 QQ 官方 bot 的
+**AT_CREATE payload 不一定带 mentions**（AT 信号在事件类型里，不在 payload 里重复）。
+对它硬卡 `is_at_self` 会把非全量群的正常提问**全部误挡** —— 这个坑踩过一次。
+框架自己也是这个约定：
+
+```python
+# 仅全量群消息区分是否艾特机器人; 非全量消息收不到未艾特消息, 一律算艾特
+at_bot = event.is_at_self if event.event_type == GROUP_MESSAGE_CREATE else True
+#                                                    core/bot/event.py:178
+```
 
 但 `block` 是在**匹配阶段**生效的，函数体 `return` 收不回来：那些非 @ 消息
 虽然不会被回复，却已经对更低优先级的插件不可见了。所以：
