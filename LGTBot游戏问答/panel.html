@@ -308,7 +308,8 @@ async function loadStats() {
       ['questions_today', '今日提问'], ['users_today', '今日用户'],
       ['questions_total', '累计提问'], ['answers_total', '累计成功'],
       ['failures_total', '累计失败'], ['tool_calls_total', '累计工具调用'],
-      ['regenerations_total', '接地重试'], ['ungrounded_total', '拦下的臆造'],
+      ['regenerations_total', '接地重试'], ['synthesized_total', '合成兜底'],
+      ['ungrounded_total', '拦下的臆造'],
       ['blocked_input_total', '拦下的输入'], ['blocked_output_total', '拦下的输出'],
       ['active_contexts', '活跃会话'],
     ].map(([key, label]) =>

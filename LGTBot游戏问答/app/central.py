@@ -120,6 +120,9 @@ TOOL_FORMAT_RULE = (
     '且必须用嵌套标签写参数：<工具名><参数名>参数值</参数名></工具名>。'
     '禁止把参数写成 XML 属性 —— <工具名 参数="值"/> 无法被解析，会导致工具完全没有执行。'
     '只有完全无参数的工具才写 <工具名/>。输出 XML 时不要同时输出解释文字。'
+    '拿到工具结果后必须直接写出最终答案；'
+    '**绝不要把「[请求执行工具]」这类方括号占位文本当成回复发出去** —— '
+    '那是协议内部标记，不是答案。'
 )
 
 # 实测模型会凭空编造出 `<游戏>/game_logic/combinations.py:212-230` 这种**根本不存在**的
@@ -236,6 +239,50 @@ async def moderate_input(current: dict, text: str) -> dict:
 
 async def moderate_output(current: dict, text: str) -> dict:
     return await _moderate(current, text, 'assistant_output')
+
+
+SYNTHESIS_PROMPT = (
+    '下面是刚才检索到的真实结果。请**直接给出最终答案**，不要再请求调用任何工具，'
+    '不要输出 XML、不要输出「[请求执行工具]」之类的占位文本。'
+    '只依据这些结果作答；结果里没有的内容就说没有查到。'
+)
+
+
+async def synthesize(
+    current: dict, messages: list[dict], system_prompt: str,
+    transcript: str, session_id: str,
+) -> dict:
+    """不带工具的合成兜底：把已拿到的工具结果交给模型，让它只管写答案。
+
+    为什么这样能救场：中央模块的 XML 文本协议提示词由 _text_tool_protocol(tools)
+    生成，**tools 为空时它返回空串**（modules/ai_llm/app/service.py:1793）。
+    也就是说这一次调用完全不存在 XML 协议，也就不会出现
+    '[请求执行工具]' 这个内部占位符（同文件 :1888）—— 模型没有工具可调，
+    只能老老实实写答案。
+
+    实测故障链：模型在 XML 协议下连续两轮正常调用工具（日志里 ok=True），
+    第三轮却照抄自己前两轮被写成占位符的 assistant 内容，于是占位符变成了答案。
+    带工具重试仍会踩同一个坑，所以兜底这一轮必须把工具彻底拿掉。
+    """
+    service = get_service()
+    if service is None:
+        raise RuntimeError(status()['message'])
+    provider_id, model = resolve_selection(
+        str(current.get('provider_id') or ''), str(current.get('model_preference') or ''),
+    )
+    payload = [*messages, {'role': 'user', 'content': f'{SYNTHESIS_PROMPT}\n\n{transcript}'}]
+    return await service.complete(
+        messages=payload,
+        system_prompt=system_prompt,
+        provider_id=provider_id,
+        model=model,
+        temperature=float(current.get('temperature') or 0.2),
+        max_tokens=int(current.get('max_tokens') or 4096),
+        session_id=session_id,
+        consumer_plugin=f'{CONSUMER}_synth',
+        enable_runtime_tools=False,
+        prepare_context=False,
+    )
 
 
 async def ask(

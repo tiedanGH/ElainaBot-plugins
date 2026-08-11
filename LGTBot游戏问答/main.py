@@ -19,6 +19,7 @@ handler。而 LGTBot 把玩家的**所有游戏输入**靠 priority=-100 的
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -36,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.4.0',
+    'version': '1.4.1',
     'license': 'MIT',
 }
 
@@ -230,6 +231,25 @@ def _grounding_problem(answer: str, used: set, seen: set, current: dict) -> str:
     return ''
 
 
+def _transcript_text(transcript: list, limit: int = 60000) -> str:
+    """把这一轮真实拿到的工具结果拼成给模型看的文本。
+
+    倒序截断：越靠后的检索越贴近模型当时的意图，超预算时优先保住它们。
+    """
+    blocks, used = [], 0
+    for name, result in reversed(transcript):
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        if used + len(body) > limit:
+            body = body[: max(0, limit - used)] + '…（已截断）'
+        if not body:
+            break
+        blocks.append(f'【工具 {name} 的结果】\n{body}')
+        used += len(body)
+        if used >= limit:
+            break
+    return '\n\n'.join(reversed(blocks))
+
+
 async def _input_rejected(current: dict, text: str) -> bool:
     """用户提问的入口审核。审核不可用时按 moderation_fail_closed 决定放不放行。"""
     if not current.get('moderation_enabled'):
@@ -305,6 +325,7 @@ async def _answer(event, question: str) -> None:
     tool_calls = 0
     used_tools: set = set()
     seen_paths: set = set()
+    transcript: list = []
 
     async def tool_handler(name: str, arguments: dict):
         nonlocal tool_calls
@@ -312,6 +333,9 @@ async def _answer(event, question: str) -> None:
         result = await tools.run(name, arguments, current)
         used_tools.add(str(name))
         _collect_paths(str(name), result, seen_paths)
+        # 留一份检索结果：作答失败时靠它走「不带工具的合成兜底」
+        if isinstance(result, dict) and result.get('ok'):
+            transcript.append((str(name), result))
         return result
 
     message_id = None
@@ -333,24 +357,35 @@ async def _answer(event, question: str) -> None:
         payload = [*history, {'role': 'user', 'content': question}]
         system_prompt = central.build_system_prompt(current, _scope_hint(current))
         answer, reason = '', ''
-        # 一次正常调用 + 最多一次纠正重试。两次都不合格就宁可报错，也不发
-        # 未经检索的答案 —— 编造的规则比「查询失败」危害大得多。
+        # 第一轮带工具正常检索；不合格时分两条路补救，两条都失败才报错 ——
+        # 编造的规则比「查询失败」危害大得多。
         for attempt in (1, 2):
-            correction = ''
-            if attempt == 2:
-                correction = (
-                    central.CORRECTION_PROMPT if _leaked_tool_xml(answer)
-                    else central.UNGROUNDED_PROMPT
+            if attempt == 1:
+                result = await central.ask(
+                    current, payload, system_prompt, tool_handler, scope,
                 )
+            elif transcript:
+                # 已经检索到东西了，只是最后一步没写出答案（实测卡在占位符）。
+                # 这一轮**彻底不带工具**：中央模块的 XML 协议提示词随 tools 一起
+                # 消失，占位符也就无从产生，模型只能基于结果写答案。
+                log.warning(f'答案不合格({reason})，改用无工具合成兜底')
+                await asyncio.to_thread(store.bump, 'synthesized')
+                result = await central.synthesize(
+                    current, payload, system_prompt, _transcript_text(transcript), scope,
+                )
+            else:
+                # 一次都没检索成功，工具那步就崩了 —— 带纠正指令重来
                 log.warning(f'答案不合格({reason})，附纠正指令重试一次')
                 await asyncio.to_thread(store.bump, 'regenerations')
                 used_tools.clear()
                 seen_paths.clear()
-            result = await central.ask(
-                current, payload,
-                f'{system_prompt}\n\n{correction}' if correction else system_prompt,
-                tool_handler, scope,
-            )
+                result = await central.ask(
+                    current, payload,
+                    f'{system_prompt}\n\n'
+                    + (central.CORRECTION_PROMPT if _leaked_tool_xml(answer)
+                       else central.UNGROUNDED_PROMPT),
+                    tool_handler, scope,
+                )
             answer = str(result.get('text') or '').strip()
             if not answer:
                 reason = '模型没有返回内容'
