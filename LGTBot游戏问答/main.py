@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.6.1',
+    'version': '1.6.2',
     'license': 'MIT',
 }
 
@@ -177,13 +177,31 @@ _MECHANIC_WORDS = (
 )
 
 
+def _mentions_game(question: str, current: dict) -> bool:
+    """问题里有没有点名索引中**真实存在**的游戏。
+
+    数据驱动：拿真实索引比对中文名与目录名，不写死任何游戏名。
+    """
+    text = str(question or '').casefold()
+    if not text:
+        return False
+    for item in games.index(current).values():
+        name = str(item.get('name') or '')
+        folder = str(item.get('dir') or '')
+        if len(name) >= 2 and name.casefold() in text:
+            return True
+        if len(folder) >= 3 and folder.casefold() in text:
+            return True
+    return False
+
+
 def _needs_source(question: str, current: dict) -> bool:
-    """这个问题是否必须以源码为依据。
+    """这个问题是否必须以源码为依据（**零检索**闸用）。
 
     两种情况算「需要源码」：
-      1. 点名了索引里真实存在的游戏 —— 数据驱动比对中文名与目录名，不写死游戏名
-      2. 带机制类词汇（结算 / 计分 / 成就 / 触发 …）—— 这类问题即使点的游戏名
-         不存在，也不能让模型凭空展开，否则等于对着虚构游戏编造
+      1. 点名了索引里真实存在的游戏
+      2. 带机制类词汇（结算 / 计分 / 成就 / 触发 …）—— 即使点的游戏名不存在，
+         也不能让模型凭空展开，否则等于对着虚构游戏编造
 
     都不沾边的才算元问题（「LGTBot 是什么」「谁开发的」），那类没有源码可读，
     权威事实由 central.PROJECT_FACTS 预置，零检索作答是合理的。
@@ -193,14 +211,7 @@ def _needs_source(question: str, current: dict) -> bool:
         return True      # 判断不了就从严：宽松通道只发给能确认是元问题的提问
     if any(word in text for word in _MECHANIC_WORDS):
         return True
-    for item in games.index(current).values():
-        name = str(item.get('name') or '')
-        folder = str(item.get('dir') or '')
-        if len(name) >= 2 and name.casefold() in text:
-            return True
-        if len(folder) >= 3 and folder.casefold() in text:
-            return True
-    return False
+    return _mentions_game(question, current)
 
 
 def _collect_paths(name: str, result, seen: set) -> None:
@@ -281,8 +292,19 @@ def _grounding_problem(
                 return f'问题需要源码依据却一个工具都没调用，就给出了 {length} 字的回答'
         elif length > _NO_TOOL_META_CHARS:
             return f'一个工具都没调用就给出了 {length} 字的回答'
-    if used and not (used & _CONTENT_TOOLS) and length > _LIST_ONLY_CHARS:
-        return f'只列了清单没读任何文件，却给出了 {length} 字的回答'
+    # 闸 3 只在**点名了具体游戏**时生效，判据比闸 2 更窄。
+    # list_games 会连每个游戏的简介一起返回，所以「推荐几款休闲的多人游戏」这类
+    # 浏览/推荐问题，仅凭清单作答完全站得住，而且天然会长（要覆盖几十个游戏）。
+    # 生产实测踩过：一段 466 字的推荐被这道闸误杀，重试后模型反而叫用户自己去
+    # 运行 list_games，那条错的短回答倒过了闸发出去了。
+    # 点名了具体游戏还只看清单，才是真的在编 —— 那种情况必须拦。
+    if (
+        used and not (used & _CONTENT_TOOLS)
+        and length > _LIST_ONLY_CHARS
+        # 问题为空时判断不了，从严 —— 与闸 2 的 fail-safe 取向一致
+        and (not str(question or '').strip() or _mentions_game(question, current))
+    ):
+        return f'点名了具体游戏却只列清单没读文件，就给出了 {length} 字的回答'
     return ''
 
 
