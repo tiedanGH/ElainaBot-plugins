@@ -3,12 +3,18 @@
 框架 ``@handler(cooldown=...)`` 只是被 decorators.py 存进 handler 字典，core 里
 没有任何地方读它（见 core/plugin/decorators.py:45），所以限流必须自己做。
 
-三道闸，顺序固定：
-  1. 并发闸 —— 同一用户上一问还在跑就直接拒，避免刷屏把模型调用堆起来
-  2. 冷却闸 —— 距上次提问不足 cooldown_seconds
-  3. 日限闸 —— 今日已达 daily_limit
+四道闸，顺序固定：
+  1. 单人并发闸 —— 同一用户上一问还在跑就直接拒，避免刷屏把模型调用堆起来
+  2. 全局并发闸 —— 同时在跑的问答总数上限
+  3. 冷却闸 —— 距上次提问不足 cooldown_seconds
+  4. 日限闸 —— 今日已达 daily_limit
 
-主人可按配置豁免 2、3，但**不豁免并发闸**：那道闸防的是把自己卡死，不是防滥用。
+主人可按配置豁免 3、4，但**不豁免前两道**：并发闸防的是把服务打满，不是防滥用。
+
+为什么必须有全局闸：一次问答要跑 1 次输入审核 + 1~2 次问答（每次最多 10 轮工具
+调用）+ 1 次输出审核，实测单次 10~25 秒。只拦单人的话，几个玩家同时问就是几倍
+的并发打到同一个接口上，模型侧排队、插件侧线程池也吃紧，表现出来就是「卡死」。
+超了直接拒并告诉用户稍后再来，比让所有人一起慢要好。
 """
 from __future__ import annotations
 
@@ -17,22 +23,42 @@ import time
 
 from . import store
 
+# user_id -> 开始时间（time.monotonic）
 _running: dict[str, float] = {}
-_RUNNING_TTL = 300.0        # 兜底：进程异常导致 release 丢失时，5 分钟后自动放行
 
 
-def acquire(user_id: str) -> bool:
-    """占位成功返回 True；该用户已有请求在跑返回 False。"""
+def _sweep(now: float, ttl: float) -> None:
+    """清掉超时残留的占位。
+
+    正常路径靠 finally 释放，但进程异常、任务被取消等情况下 release 可能丢失，
+    槽位就会被永久占住 —— 全局闸下这会让**所有人**都问不了，比单人卡住严重得多。
+    """
+    for user_id, started in list(_running.items()):
+        if now - started >= ttl:
+            _running.pop(user_id, None)
+
+
+def acquire(user_id: str, current: dict) -> str:
+    """占位。返回空串表示成功，否则是拒绝原因：'self' / 'global'。"""
     now = time.monotonic()
-    started = _running.get(user_id)
-    if started is not None and now - started < _RUNNING_TTL:
-        return False
+    # 兜底 TTL 取总超时的两倍：正常请求一定在这之前结束，还没结束就是真出问题了
+    _sweep(now, max(60.0, float(current.get('request_timeout_seconds') or 90) * 2))
+    if user_id in _running:
+        return 'self'
+    limit = int(current.get('max_concurrent') or 0)
+    if limit > 0 and len(_running) >= limit:
+        return 'global'
     _running[user_id] = now
-    return True
+    return ''
 
 
 def release(user_id: str) -> None:
     _running.pop(user_id, None)
+
+
+def active() -> int:
+    """当前在跑的问答数（面板统计用）。"""
+    return len(_running)
 
 
 def clear() -> None:

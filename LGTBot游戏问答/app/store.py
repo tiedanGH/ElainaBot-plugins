@@ -14,6 +14,8 @@ import time
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
+# 记住数据目录，close() 之后仍能自动重连（见 _db 的说明）
+_data_dir = ''
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -40,19 +42,27 @@ CREATE TABLE IF NOT EXISTS counters (
 """
 
 
-def connect(data_dir: str) -> None:
+def _open() -> sqlite3.Connection:
+    """真正建连。**调用方必须已持有 _lock** —— threading.Lock 不可重入，
+    在这里再 with _lock 会直接死锁（_db 就是在持锁状态下调过来的）。
+    """
     global _conn
+    os.makedirs(_data_dir, exist_ok=True)
+    conn = sqlite3.connect(os.path.join(_data_dir, 'qa.db'), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    _conn = conn
+    return conn
+
+
+def connect(data_dir: str) -> None:
+    global _data_dir
     with _lock:
-        if _conn is not None:
-            return
-        os.makedirs(data_dir, exist_ok=True)
-        _conn = sqlite3.connect(
-            os.path.join(data_dir, 'qa.db'), check_same_thread=False,
-        )
-        _conn.row_factory = sqlite3.Row
-        _conn.execute('PRAGMA journal_mode=WAL')
-        _conn.executescript(_SCHEMA)
-        _conn.commit()
+        _data_dir = str(data_dir or _data_dir)
+        if _conn is None:
+            _open()
 
 
 def close() -> None:
@@ -64,8 +74,17 @@ def close() -> None:
 
 
 def _db() -> sqlite3.Connection:
+    """取连接，必要时自动重连。调用方已持有 _lock。
+
+    为什么要自动重连：热重载时 on_unload 会 close()，而那一刻可能还有请求在飞
+    （一次问答要跑十几秒）。原先直接抛「存储尚未初始化」，在飞的请求全部报错；
+    更糟的是**异常处理里也要写统计**，于是二次抛异常，_reply 根本没机会执行 ——
+    用户什么都收不到，表现出来就是「卡死」。
+    """
     if _conn is None:
-        raise RuntimeError('存储尚未初始化')
+        if not _data_dir:
+            raise RuntimeError('存储尚未初始化')
+        return _open()
     return _conn
 
 
@@ -199,6 +218,7 @@ def stats() -> dict:
         'synthesized_total': counters.get('synthesized', 0),
         'overflows_total': counters.get('overflows', 0),
         'recovered_calls_total': counters.get('recovered_calls', 0),
+        'busy_global_total': counters.get('busy_global', 0),
         'ungrounded_total': counters.get('ungrounded', 0),
         'blocked_input_total': counters.get('blocked_input', 0),
         'blocked_output_total': counters.get('blocked_output', 0),

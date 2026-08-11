@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.7.0',
+    'version': '1.7.1',
     'license': 'MIT',
 }
 
@@ -488,6 +488,19 @@ def _fit_result(result: dict, allowance: int) -> dict:
     return minimal
 
 
+async def _bump(key: str, amount: int = 1) -> None:
+    """写统计，失败也不抛。
+
+    统计只是观测数据，绝不能因为它把主流程带崩 —— 实测踩过：热重载关掉了
+    存储连接，异常处理里的 store.bump 又抛一次，_reply 根本没执行，
+    用户一个字都收不到。
+    """
+    try:
+        await asyncio.to_thread(store.bump, key, amount)
+    except Exception as error:  # noqa: BLE001 — 观测数据不值得中断主流程
+        log.debug(f'统计写入失败({key}): {error}')
+
+
 def _transcript_text(transcript: list, limit: int = 30000) -> str:
     """把这一轮真实拿到的工具结果拼成给模型看的文本。
 
@@ -593,8 +606,16 @@ async def _answer(event, question: str) -> None:
     if not allowed:
         await _reply(event, refusal)
         return
-    if not ratelimit.acquire(user_id):
+    slot = ratelimit.acquire(user_id, current)
+    if slot == 'self':
         await _reply(event, str(current.get('busy_reply') or '正在处理上一个问题，请稍候。'))
+        return
+    if slot == 'global':
+        # 全局并发满了。宁可直接拒也不排队 —— 排队只会让所有人一起等，
+        # 而 QQ 那边的被动消息额度还在倒计时。
+        log.info(f'全局并发已满（{ratelimit.active()}），拒绝一次提问')
+        await _bump('busy_global')
+        await _reply(event, str(current.get('busy_global_reply') or '现在问的人有点多，稍等一会儿再来～'))
         return
 
     scope = _scope(event)
@@ -630,9 +651,9 @@ async def _answer(event, question: str) -> None:
 
     message_id = None
     try:
-        await asyncio.to_thread(store.bump, 'questions')
+        await _bump('questions')
         if await _input_rejected(current, question):
-            await asyncio.to_thread(store.bump, 'blocked_input')
+            await _bump('blocked_input')
             await _reply(event, str(current.get('moderation_blocked_response') or ''))
             return
         history = await asyncio.to_thread(
@@ -662,7 +683,7 @@ async def _answer(event, question: str) -> None:
                 # 去合成，于是回了「没有查到关于…的规则」，而代码其实在那儿。
                 # 只有真读到过源码，合成才有意义；否则要让它带着工具重新去查。
                 log.warning(f'答案不合格({reason})，改用无工具合成兜底')
-                await asyncio.to_thread(store.bump, 'synthesized')
+                await _bump('synthesized')
                 result = await central.synthesize(
                     current, payload, system_prompt,
                     _transcript_text(transcript, budget), scope,
@@ -670,7 +691,7 @@ async def _answer(event, question: str) -> None:
             else:
                 # 一次都没检索成功，工具那步就崩了 —— 带纠正指令重来
                 log.warning(f'答案不合格({reason})，附纠正指令重试一次')
-                await asyncio.to_thread(store.bump, 'regenerations')
+                await _bump('regenerations')
                 used_tools.clear()
                 seen_paths.clear()
                 result = await central.ask(
@@ -699,11 +720,11 @@ async def _answer(event, question: str) -> None:
             leaked = _parse_leaked_tool_calls(answer)
             if leaked:
                 log.warning(f'模型把 {len(leaked)} 个工具调用写成了 XML 文本，代为执行')
-                await asyncio.to_thread(store.bump, 'recovered_calls')
+                await _bump('recovered_calls')
                 for name, arguments in leaked:
                     await tool_handler(name, arguments)
         else:
-            await asyncio.to_thread(store.bump, 'ungrounded')
+            await _bump('ungrounded')
             raise RuntimeError(f'两次作答均不合格: {reason}')
         limit = int(current.get('answer_max_chars') or 1500)
         if len(answer) > limit:
@@ -724,7 +745,7 @@ async def _answer(event, question: str) -> None:
             answer = str(current.get('moderation_blocked_response') or '')
             blocked = True
         if blocked:
-            await asyncio.to_thread(store.bump, 'blocked_output')
+            await _bump('blocked_output')
             # 连这一轮的提问一起撤回：违规答案不入库，光留个没有回复的提问会让
             # 下一轮的历史出现悬空的 user 消息，反而干扰模型。
             if message_id is not None:
@@ -739,20 +760,20 @@ async def _answer(event, question: str) -> None:
             )
             answer = _with_disclaimer(answer, current)
         await asyncio.to_thread(store.record_usage, user_id)
-        await asyncio.to_thread(store.bump, 'answers')
+        await _bump('answers')
         if tool_calls:
-            await asyncio.to_thread(store.bump, 'tool_calls', tool_calls)
+            await _bump('tool_calls', tool_calls)
         # 被拦下时发的是插件自己的固定话术，不挂免责声明（那不是 AI 的回答）
         await _reply(event, answer)
     except Exception as error:
         # 失败时撤回刚写入的提问，别在上下文里留下没有答复的半截对话
         if message_id is not None:
             await asyncio.to_thread(store.remove, message_id)
-        await asyncio.to_thread(store.bump, 'failures')
+        await _bump('failures')
         if _context_overflow(error):
             # 接口有输入字符硬上限，撞上就整轮报废。这不是偶发故障，靠重试解决不了，
             # 必须在面板把「输入预算」调到模型上限之下，所以日志要说清楚怎么改。
-            await asyncio.to_thread(store.bump, 'overflows')
+            await _bump('overflows')
             log.error(
                 f'输入超出接口字符上限（当前预算 {budget}，本轮工具结果已用 {spent}）。'
                 f'请在面板把「输入预算」调小到模型上限以下: {str(error)[:200]}'

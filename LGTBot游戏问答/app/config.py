@@ -118,6 +118,17 @@ DEFAULT_CONFIG = {
     'daily_limit': 50,
     'owner_unlimited': True,
     'busy_reply': '正在努力查代码，下个问题稍等一下～',
+
+    # 全局同时在跑的问答数上限。一次问答 = 1 次输入审核 + 1~2 次问答（每次最多
+    # 10 轮工具调用）+ 1 次输出审核，实测单次 10~25 秒。只拦单人的话，几个玩家
+    # 同时问就是几倍并发打到同一个接口，模型侧排队、线程池也吃紧，表现出来就是
+    # 「卡死」。满了直接拒，不排队 —— 排队只会让所有人一起等。0 = 不限（不建议）。
+    'max_concurrent': 2,
+    'busy_global_reply': '现在问的人有点多，稍等一会儿再来～',
+
+    # 单次模型调用的超时。没有超时的话，一个卡住的请求会一直占着并发槽，
+    # 后面所有人都被挡在门外 —— 单个请求慢会变成整个功能不可用。
+    'request_timeout_seconds': 90,
     'cooldown_reply': '问得太快啦，{seconds} 秒后再来。',
     'daily_limit_reply': '你今天已经问满 {limit} 次啦，明天再来吧。',
 
@@ -268,6 +279,8 @@ _INT_FIELDS = {
     'daily_limit': (0, 10000),
     'answer_max_chars': (100, 8000),
     'error_detail_chars': (40, 1000),
+    'max_concurrent': (0, 64),
+    'request_timeout_seconds': (0, 600),
     'input_budget_chars': (2000, 400000),
     'game_source_max_chars': (2000, 400000),
     'search_max_matches': (5, 300),

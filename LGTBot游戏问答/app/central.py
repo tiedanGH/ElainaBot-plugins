@@ -11,12 +11,29 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 from . import safety
 from .config import DEFAULT_SAFETY_REVIEW_PROMPT
 
 CONSUMER = 'lgtbot_qa'
+
+
+async def _bounded(coro, current: dict, label: str):
+    """给每次模型调用套总超时。
+
+    没有超时的话，一个卡住的请求会一直占着并发槽（默认只有 2 个），
+    后面所有人都被挡在门外 —— 单个请求慢，变成整个功能不可用。
+    超时按失败处理，走既有的报错路径，槽位在 finally 里正常释放。
+    """
+    timeout = float(current.get('request_timeout_seconds') or 90)
+    if timeout <= 0:
+        return await coro
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError as error:
+        raise RuntimeError(f'{label}超时（{timeout:.0f} 秒未返回）') from error
 
 
 def _raw_service():
@@ -242,7 +259,7 @@ async def _moderate(current: dict, text: str, source: str) -> dict:
         '不得因为内容是引用、历史介绍、玩笑、纠错或中立讨论而放行。'
     )
     try:
-        result = await service.complete(
+        result = await _bounded(service.complete(
             [{'role': 'user', 'content': json.dumps(
                 {'source': source, 'content': str(text or '')}, ensure_ascii=False,
             )}],
@@ -254,7 +271,7 @@ async def _moderate(current: dict, text: str, source: str) -> dict:
             consumer_plugin=f'{CONSUMER}_review',
             enable_runtime_tools=False,
             prepare_context=False,
-        )
+        ), current, '内容审核')
         raw = str(result.get('text') or '').strip()
         decision = ''.join(raw.split()).strip('`"\'。.!！').replace(',', '，')
         if decision not in {'安全', '内容违规，已禁止发送'}:
@@ -305,7 +322,7 @@ async def synthesize(
         str(current.get('provider_id') or ''), str(current.get('model_preference') or ''),
     )
     payload = [*messages, {'role': 'user', 'content': f'{SYNTHESIS_PROMPT}\n\n{transcript}'}]
-    return await service.complete(
+    return await _bounded(service.complete(
         messages=payload,
         system_prompt=system_prompt,
         provider_id=provider_id,
@@ -316,7 +333,7 @@ async def synthesize(
         consumer_plugin=f'{CONSUMER}_synth',
         enable_runtime_tools=False,
         prepare_context=False,
-    )
+    ), current, '合成兜底')
 
 
 async def ask(
@@ -332,7 +349,7 @@ async def ask(
     provider_id, model = resolve_selection(
         str(current.get('provider_id') or ''), str(current.get('model_preference') or ''),
     )
-    return await service.complete(
+    return await _bounded(service.complete(
         messages=messages,
         system_prompt=system_prompt,
         provider_id=provider_id,
@@ -345,4 +362,4 @@ async def ask(
         session_id=session_id,
         consumer_plugin=CONSUMER,
         prepare_context=False,
-    )
+    ), current, '模型调用')

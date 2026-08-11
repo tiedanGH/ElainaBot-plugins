@@ -12,7 +12,7 @@ from aiohttp import web
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.web_pages import register_route
 
-from . import central, config, conflict, games, sandbox, store
+from . import central, config, conflict, games, ratelimit, sandbox, store
 
 PREFIX = '/api/ext/lgtbot-qa'
 _registered = False
@@ -108,6 +108,7 @@ async def _stats(_request: web.Request) -> web.Response:
         (item for item in shared.get('providers', []) if item.get('id') == provider_id), None,
     )
     data.update({
+        'active_now': ratelimit.active(),
         'games': len(catalog),
         'provider': provider['name'] if provider else '自动选择',
         'model': model or '自动选择',
