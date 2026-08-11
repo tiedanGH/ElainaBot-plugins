@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.5.2',
+    'version': '1.6.0',
     'license': 'MIT',
 }
 
@@ -152,10 +152,51 @@ _CITATION_RE = re.compile(
 # 这类短回复，它们本来就不需要检索。
 _NO_TOOL_CHARS = 60
 
+# 同上，但用于**没有点名任何具体游戏**的问题（「LGTBot 是什么」这类元问题）。
+# 这类问题没有对应的游戏源码可读，权威事实已由 central.PROJECT_FACTS 预置进
+# 提示词，零检索作答本就合理 —— 实测「LGTBot 是什么」正是卡在 60 字死线上连挂两次。
+# 仍设上限而不是完全放开：借元问题的壳写长篇机制说明，照样要拦。
+_NO_TOOL_META_CHARS = 500
+
 # 「只列了清单、没读任何文件」时允许的最大答案长度。列表类问题（有哪些游戏、
 # 某目录下有什么）确实只靠 list_* 就能答，且可能列得比较长，所以放宽到这里；
 # 超过这个长度还一个文件都没读，基本就是在展开自己想象的机制了。
 _LIST_ONLY_CHARS = 300
+
+
+# 机制类问题的通用词汇（领域词，不是游戏名）。带上这些词就说明答案必须来自源码，
+# 哪怕问题里那个游戏名根本不存在 —— 否则模型可以对着一个虚构游戏编 500 字。
+_MECHANIC_WORDS = (
+    '结算', '计分', '得分', '分数', '积分', '规则', '玩法', '怎么玩', '成就',
+    '倍率', '判定', '触发', '顺序', '流程', '胜负', '输赢', '扣血', '血量',
+    '天赋', '技能', '卡牌', '回合', '阶段', '选项', '配置',
+)
+
+
+def _needs_source(question: str, current: dict) -> bool:
+    """这个问题是否必须以源码为依据。
+
+    两种情况算「需要源码」：
+      1. 点名了索引里真实存在的游戏 —— 数据驱动比对中文名与目录名，不写死游戏名
+      2. 带机制类词汇（结算 / 计分 / 成就 / 触发 …）—— 这类问题即使点的游戏名
+         不存在，也不能让模型凭空展开，否则等于对着虚构游戏编造
+
+    都不沾边的才算元问题（「LGTBot 是什么」「谁开发的」），那类没有源码可读，
+    权威事实由 central.PROJECT_FACTS 预置，零检索作答是合理的。
+    """
+    text = str(question or '').casefold()
+    if not text:
+        return True      # 判断不了就从严：宽松通道只发给能确认是元问题的提问
+    if any(word in text for word in _MECHANIC_WORDS):
+        return True
+    for item in games.index(current).values():
+        name = str(item.get('name') or '')
+        folder = str(item.get('dir') or '')
+        if len(name) >= 2 and name.casefold() in text:
+            return True
+        if len(folder) >= 3 and folder.casefold() in text:
+            return True
+    return False
 
 
 def _collect_paths(name: str, result, seen: set) -> None:
@@ -208,7 +249,9 @@ def _fake_citations(answer: str, seen: set, current: dict) -> list:
     return fake
 
 
-def _grounding_problem(answer: str, used: set, seen: set, current: dict) -> str:
+def _grounding_problem(
+    answer: str, used: set, seen: set, current: dict, question: str = '',
+) -> str:
     """答案是否站得住脚。返回空串表示通过，否则是记进日志的原因。
 
     三道闸，都不针对任何具体游戏：
@@ -219,13 +262,21 @@ def _grounding_problem(answer: str, used: set, seen: set, current: dict) -> str:
     闸 2、3 用长度分档，是为了不误伤合理的短回复和列表类回答：
     「没有查到」「你问的是哪个版本？」不需要检索，「已收录 67 个游戏，包括…」
     只靠 list_games 就能答且可能较长。
+
+    闸 2 还要看问题**有没有点名具体游戏**：没点名的元问题（「LGTBot 是什么」）
+    根本没有对应源码可读，权威事实由 central.PROJECT_FACTS 预置，零检索作答合理，
+    所以放宽到 _NO_TOOL_META_CHARS。点名了游戏仍然从严 —— 那种问题必须来自源码。
     """
     fake = _fake_citations(answer, seen, current)
     if fake:
         return f'引用了不存在的文件: {"、".join(fake[:5])}'
     length = len(answer)
-    if not used and length > _NO_TOOL_CHARS:
-        return f'一个工具都没调用就给出了 {length} 字的回答'
+    if not used:
+        if _needs_source(question, current):
+            if length > _NO_TOOL_CHARS:
+                return f'问题需要源码依据却一个工具都没调用，就给出了 {length} 字的回答'
+        elif length > _NO_TOOL_META_CHARS:
+            return f'一个工具都没调用就给出了 {length} 字的回答'
     if used and not (used & _CONTENT_TOOLS) and length > _LIST_ONLY_CHARS:
         return f'只列了清单没读任何文件，却给出了 {length} 字的回答'
     return ''
@@ -527,7 +578,9 @@ async def _answer(event, question: str) -> None:
             elif _leaked_tool_xml(answer):
                 reason = '工具调用写成了属性式 XML，实际没有执行'
             else:
-                reason = _grounding_problem(answer, used_tools, seen_paths, current)
+                reason = _grounding_problem(
+                    answer, used_tools, seen_paths, current, question,
+                )
             if not reason:
                 break
         else:

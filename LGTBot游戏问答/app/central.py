@@ -144,6 +144,25 @@ CODE_LAYOUT_RULE = (
     '没读到就说没查到，绝不用「大概是这样」的方式补全代码细节。'
 )
 
+# 项目本身的事实。逐条对应 plugins/LGTBot_ElainaBot/README.md 的「致谢与项目来源」，
+# 不是我编的。
+#
+# 为什么要预置：「LGTBot 是什么」这类元问题没有对应的游戏可读，模型只会凭自己的
+# 先验知识作答 —— 而它对这个小众项目的先验基本是错的（实测答出过整段臆造）。
+# 把权威事实摆进提示词，零检索也能答对；要细节再让它读 README.md。
+PROJECT_FACTS = (
+    '【项目简介】以下是关于本项目的权威事实，可直接用于回答，不需要检索：\n'
+    '- LGTBot 是一个基于 C++20 的多人文字推理游戏裁判机器人库，内置 50+ 种不同风格的游戏，'
+    '由 @Slontia 开发（LGPLv2）。游戏逻辑、引擎核心、图片渲染都是上游实现的。\n'
+    '- 「LGT」取自日本漫画家甲斐谷忍《Liar Game》里的虚构组织'
+    '「Liar Game Tournament 事务所」。\n'
+    '- LGTBot_ElainaBot 是把 LGTBot 接到 ElainaBot_v2（QQ 官方机器人框架）的**适配层**，'
+    '作者是铁蛋。它不改引擎功能，只做框架适配和 QQ 协议限制的处理'
+    '（媒体消息合并、@提及格式、按钮交互等）。\n'
+    '- 你自己是这个机器人上的游戏答疑助手，负责检索源码回答玩家关于游戏的问题。\n'
+    '问到项目、引擎、机器人本身时，依据以上事实回答即可；需要更多细节再读 README.md。'
+)
+
 # 硬性作答前提。与 CODE_LAYOUT_RULE 一样写死在代码里，不进面板可编辑的 system_prompt。
 GROUNDING_RULE = (
     '【作答前提】回答任何涉及规则、数值、判定、结算、成就的问题之前，'
@@ -182,6 +201,7 @@ def build_system_prompt(current: dict, scope_hint: str) -> str:
     parts = [
         str(current.get('system_prompt') or '').strip(),
         scope_hint,
+        PROJECT_FACTS,
         CODE_LAYOUT_RULE,
         GROUNDING_RULE,
         TOOL_FORMAT_RULE,
