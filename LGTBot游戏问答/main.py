@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.6.0',
+    'version': '1.6.1',
     'license': 'MIT',
 }
 
@@ -85,14 +85,18 @@ def _is_owner(event) -> bool:
 
 
 async def _reply(event, text: str) -> None:
-    """群聊里带上 @提问人，避免多人同时问时对不上号。"""
+    """群聊里带上 @提问人，避免多人同时问时对不上号。
+
+    @ 之后必须换行：正文常以 markdown 结构开头（列表、引用、标题），跟 @ 挤在
+    同一行会让解析器把整行当普通文本，markdown 直接失效。
+    """
     content = str(text or '').strip()
     if not content:
         return
     if getattr(event, 'is_group', False):
         mention = f'<@{event.user_id}>'
         if not content.startswith(mention):
-            content = f'{mention} {content}'
+            content = f'{mention}\n{content}'
     await event.reply(content)
 
 
@@ -451,6 +455,27 @@ async def _output_rejected(current: dict, text: str) -> bool:
     return False
 
 
+def _with_reason(message: str, error: Exception, current: dict) -> str:
+    """报错话术后面附上具体原因。
+
+    失败原因是插件自己生成的确定性文本（接地闸的判定语、超长提示等），不经模型，
+    所以**不需要过内容审核** —— 审核针对的是模型产出。
+
+    但仍要过一遍 IP 脱敏并截断：异常有可能包着接口返回的原始报文，
+    里面可能带内网地址或一长串 JSON，不适合原样丢给群友。
+    """
+    text = str(message or '').strip()
+    if not current.get('error_detail_enabled', True):
+        return text
+    detail = safety.redact_ips(str(error or '')).strip().replace('\n', ' ')
+    if not detail:
+        return text
+    limit = int(current.get('error_detail_chars') or 200)
+    if len(detail) > limit:
+        detail = detail[:limit] + '…'
+    return f'{text}\n> 原因：{detail}'
+
+
 def _with_disclaimer(answer: str, current: dict) -> str:
     """给 AI 答案附上免责声明。
 
@@ -638,10 +663,15 @@ async def _answer(event, question: str) -> None:
                 f'输入超出接口字符上限（当前预算 {budget}，本轮工具结果已用 {spent}）。'
                 f'请在面板把「输入预算」调小到模型上限以下: {str(error)[:200]}'
             )
-            await _reply(event, '这个问题涉及的代码太多，超出了模型单次可读的长度，换个更具体的问法试试。')
+            await _reply(event, _with_reason(
+                '这个问题涉及的代码太多，超出了模型单次可读的长度，换个更具体的问法试试。',
+                error, current,
+            ))
         else:
             log.warning(f'问答失败: {type(error).__name__}: {error}')
-            await _reply(event, '查询失败了，稍后再试一次；如果一直失败请联系管理员。')
+            await _reply(event, _with_reason(
+                '查询失败了，稍后再试一次；如果一直失败请联系管理员。', error, current,
+            ))
     finally:
         ratelimit.release(user_id)
 

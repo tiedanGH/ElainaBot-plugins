@@ -121,6 +121,12 @@ DEFAULT_CONFIG = {
     'cooldown_reply': '问得太快啦，{seconds} 秒后再来。',
     'daily_limit_reply': '你今天已经问满 {limit} 次啦，明天再来吧。',
 
+    # 报错时把具体原因一起发出去。原因是插件自己生成的确定性文本，不经模型，
+    # 所以不走内容审核；但仍会做 IP 脱敏并截断，避免异常里包着接口原始报文。
+    # 不想把内部判定暴露给群友就关掉。
+    'error_detail_enabled': True,
+    'error_detail_chars': 200,
+
     # ---- 免责声明 ----
     # 只拼在发给 QQ 的那条消息末尾，**不写进上下文库**：否则会随历史回灌给模型，
     # 白烧 token，还可能让模型自己模仿着再写一遍。留空则不附加。
@@ -261,6 +267,7 @@ _INT_FIELDS = {
     'cooldown_seconds': (0, 3600),
     'daily_limit': (0, 10000),
     'answer_max_chars': (100, 8000),
+    'error_detail_chars': (40, 1000),
     'input_budget_chars': (2000, 400000),
     'game_source_max_chars': (2000, 400000),
     'search_max_matches': (5, 300),
