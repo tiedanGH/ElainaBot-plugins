@@ -9,25 +9,50 @@ import asyncio
 
 from aiohttp import web
 
+from core.base.logger import PLUGIN, get_logger
 from core.plugin.web_pages import register_route
 
 from . import central, config, conflict, games, sandbox, store
 
 PREFIX = '/api/ext/lgtbot-qa'
 _registered = False
+log = get_logger(PLUGIN, 'LGTBot游戏问答')
+
+
+def _guarded(handler):
+    """把未预期的异常收成 JSON 错误，而不是让 aiohttp 抛出裸 500。
+
+    面板前端只认 {'success': False, 'error': ...}，遇到 500 只会弹一句
+    「HTTP 500」，看不出到底哪儿坏了 —— 实测「重建索引」按钮就是这样，
+    真实原因（传参写错）全被 500 吞掉了。
+    """
+    async def wrapper(request: web.Request) -> web.Response:
+        try:
+            return await handler(request)
+        except web.HTTPException:
+            raise
+        except Exception as error:  # noqa: BLE001 — 面板需要看到原因，不能静默
+            log.exception(f'面板接口 {request.method} {request.path} 失败')
+            return web.json_response(
+                {'success': False, 'error': f'{type(error).__name__}: {error}'},
+                status=500,
+            )
+
+    wrapper.__name__ = getattr(handler, '__name__', 'wrapper')
+    return wrapper
 
 
 def register_routes() -> None:
     global _registered
     if _registered:
         return
-    register_route('GET', f'{PREFIX}/config')(_get_config)
-    register_route('PUT', f'{PREFIX}/config')(_save_config)
-    register_route('GET', f'{PREFIX}/stats')(_stats)
-    register_route('GET', f'{PREFIX}/games')(_games)
-    register_route('POST', f'{PREFIX}/games/refresh')(_refresh_games)
-    register_route('POST', f'{PREFIX}/probe')(_probe)
-    register_route('DELETE', f'{PREFIX}/context')(_clear_context)
+    register_route('GET', f'{PREFIX}/config')(_guarded(_get_config))
+    register_route('PUT', f'{PREFIX}/config')(_guarded(_save_config))
+    register_route('GET', f'{PREFIX}/stats')(_guarded(_stats))
+    register_route('GET', f'{PREFIX}/games')(_guarded(_games))
+    register_route('POST', f'{PREFIX}/games/refresh')(_guarded(_refresh_games))
+    register_route('POST', f'{PREFIX}/probe')(_guarded(_probe))
+    register_route('DELETE', f'{PREFIX}/context')(_guarded(_clear_context))
     _registered = True
 
 
@@ -99,7 +124,8 @@ async def _games(request: web.Request) -> web.Response:
 
 async def _refresh_games(_request: web.Request) -> web.Response:
     current = config.load()
-    await asyncio.to_thread(games.index, current, True)
+    # index() 的 refresh 是**仅关键字参数**，按位置传会 TypeError → 面板 500。
+    await asyncio.to_thread(games.index, current, refresh=True)
     items = await asyncio.to_thread(games.search, current, '')
     return web.json_response({'success': True, 'data': {'count': len(items)}})
 

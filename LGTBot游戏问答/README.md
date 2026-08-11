@@ -275,6 +275,25 @@ XML 回退协议本身不稳，每多一轮工具调用就多一次失败机会 
 
 ---
 
+## 零外部插件依赖
+
+**生产环境可能没有装 AI 开发插件**，所以本插件的检索能力全部自带，不复用任何其他插件的工具：
+
+| 模块 | 内容 |
+|---|---|
+| `app/sandbox.py` | 只读沙箱：路径校验、目录遍历、行窗口读取 |
+| `app/tools.py` | 六个工具（`list_games` / `read_game_source` / `read_game_rule` / `search_code` / `read_file` / `list_dir`）全部本插件实现 |
+| `app/games.py` | 游戏索引与中文名解析 |
+
+全部 import 只有：标准库（`asyncio` `copy` `fnmatch` `ipaddress` `json` `os` `re`
+`sqlite3` `threading` `time`）、`aiohttp`、框架 `core.*`、以及自己的 `app.*`。
+用例里有断言锁死这条：任何指向其他插件的 import 都会让测试失败。
+
+> `app/config.py` 里提到 AI 聊天陪伴的注释只是说明审核提示词的同源关系，
+> 常量是**逐字复制**到本插件文件里的，没有 import。
+
+---
+
 ## 安全边界
 
 **所有**文件访问经 `app/sandbox.py` 收口，工具层不自己拼路径、不自己 `open()`。
