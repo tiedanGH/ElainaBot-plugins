@@ -333,12 +333,29 @@ XML 回退协议本身不稳，每多一轮工具调用就多一次失败机会 
 写成属性式 `<工具名 参数="值"/>` —— 那样**一个都匹配不上**，raw XML 会原样变成答案发给
 用户，中央层还记为 `success`，用户看到一堆标签且没有下文。
 
-两道防护：
+模型实际产出过**三种方言**，中央模块只认第一种：
+
+| 方言 | 样子 | 中央模块 |
+|---|---|---|
+| 标签名=工具名 | `<search_code><query>x</query></search_code>` | ✅ 唯一认识的 |
+| 属性式 | `<search_code query="x"/>` | ❌ 解析不出 |
+| 通用包装 | `<tool_call><tool_name>search_code</tool_name><arg_key>query</arg_key>…` | ❌ 解析不出 |
+
+第三种最阴：工具名只作为**文本内容**出现，按标签名去匹配一个也命中不到，
+所以连我早期的泄漏检测都漏了，整块 XML 原样发给了用户。
+
+三道防护：
 
 1. `app/central.py` 的 `TOOL_FORMAT_RULE` 把正确格式写死进 system prompt。刻意不放在
    面板可编辑的 `system_prompt` 里 —— 那个会被用户改写或被旧配置覆盖，而这是正确性硬约束。
-2. `main.py` 的 `_leaked_tool_xml()` 检测答案里残留的工具标签，命中则附纠正指令重试一次；
-   仍失败就走异常分支报错，**绝不把 raw XML 发给用户**。
+2. `_leaked_tool_xml()` 三种方言都认（含 `tool_call` / `tool_name` / `arg_key` /
+   `function_call` / `invoke` 等通用包装标签），**绝不把 raw XML 发给用户**。
+3. `_parse_leaked_tool_calls()` 把泄漏文本里的调用**解析出来代为执行** —— 模型的意图
+   是对的，只是写法不合中央解析器的口味，没必要让整轮作废。执行完 `used_tools` 就有
+   内容工具了，下一轮自然走无工具合成产出最终答案。
+   只接受 `TOOL_NAMES` 里的工具、最多 8 个，参数里的 `true`/`false` 会还原成 bool
+   （否则 `case_sensitive="false"` 会变成真值，搜索行为跟意图相反）。
+   面板统计有「代为执行」计数。
 
 中文名从 `mygame.cc` 的 `k_properties`（`.name_` / `.description_`）解析，逻辑与
 `LGTBot_deploy/app/review.py` 保持一致（支持相邻字符串字面量拼接）。索引按

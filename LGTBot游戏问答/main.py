@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.6.3',
+    'version': '1.7.0',
     'license': 'MIT',
 }
 
@@ -117,9 +117,70 @@ def _scene_allowed(event, current: dict) -> bool:
 
 
 _LEAKED_TOOL_XML = re.compile(
-    r'<\s*(?:' + '|'.join(re.escape(name) for name in tools.TOOL_NAMES) + r')[\s/>]',
+    r'<\s*(?:'
+    # 方言一：标签名就是工具名（中央模块 _xml_tool_calls 唯一认识的写法）
+    + '|'.join(re.escape(name) for name in tools.TOOL_NAMES)
+    # 方言二：通用包装标签。实测模型会输出
+    #   <tool_calls><tool_call><tool_name>x</tool_name><arg_key>k</arg_key>…
+    # 工具名只作为**文本内容**出现，靠上面那组标签名一个也匹配不到，
+    # 结果整块 XML 原样发给了用户。
+    + r'|/?tool_calls|/?tool_call|/?tool_name|/?arg_key|/?arg_value'
+    + r'|/?function_call|/?invoke|/?parameter'
+    + r')[\s/>]',
     re.IGNORECASE,
 )
+
+# 解析上面方言二用的三条正则。写死标签名、不做嵌套解析 —— 模型产出的这类文本
+# 结构很固定，用 ElementTree 反而会因为缺少根节点或未转义字符直接抛错。
+_TOOL_CALL_BLOCK = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL | re.IGNORECASE)
+_TOOL_NAME_TAG = re.compile(r'<tool_name>\s*(.*?)\s*</tool_name>', re.DOTALL | re.IGNORECASE)
+_ARG_PAIR = re.compile(
+    r'<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>\s*(.*?)\s*</arg_value>',
+    re.DOTALL | re.IGNORECASE,
+)
+_TAG_STRIP = re.compile(r'<[^>]*>')
+
+
+def _coerce(value: str):
+    """XML 里所有参数都是字符串，把 true/false 还原成 bool。
+
+    不还原的话 case_sensitive="false" 会变成真值（bool('false') is True），
+    搜索行为跟模型的意图正好相反。
+    """
+    text = str(value or '').strip()
+    low = text.casefold()
+    if low in ('true', 'false'):
+        return low == 'true'
+    return text
+
+
+def _parse_leaked_tool_calls(answer: str) -> list:
+    """从答案文本里把「写成了 XML 却没被执行」的工具调用解析出来。
+
+    支持实测见过的两种写法：
+      <tool_call>list_games</tool_call>                     ← 裸工具名
+      <tool_call><tool_name>x</tool_name><arg_key>…         ← 带参数
+
+    只接受 TOOL_NAMES 里的工具名，最多 8 个 —— 与中央模块的上限一致，
+    也避免模型一口气刷出几十个调用。
+    """
+    calls = []
+    for block in _TOOL_CALL_BLOCK.findall(str(answer or '')):
+        named = _TOOL_NAME_TAG.search(block)
+        if named:
+            name = named.group(1).strip()
+            arguments = {
+                key.strip(): _coerce(value)
+                for key, value in _ARG_PAIR.findall(block)
+            }
+        else:
+            name = _TAG_STRIP.sub('', block).strip()
+            arguments = {}
+        if name in tools.TOOL_NAMES:
+            calls.append((name, arguments))
+        if len(calls) >= 8:
+            break
+    return calls
 
 
 # 中央模块在 XML 回退协议下，会用 '[请求执行工具]' 占住模型只发工具调用、没有正文
@@ -625,13 +686,22 @@ async def _answer(event, question: str) -> None:
             elif _placeholder_answer(answer):
                 reason = f'回答只是中央模块的内部占位符: {answer[:40]}'
             elif _leaked_tool_xml(answer):
-                reason = '工具调用写成了属性式 XML，实际没有执行'
+                reason = '工具调用写成了 XML 文本，中央模块没能解析执行'
             else:
                 reason = _grounding_problem(
                     answer, used_tools, seen_paths, current, question,
                 )
             if not reason:
                 break
+            # 能从泄漏文本里解析出工具调用的话，代为执行 —— 模型的意图是对的，
+            # 只是写法不合中央模块解析器的口味，没必要把这一轮整个作废。
+            # 执行完 used_tools 就有内容工具了，下一轮自然走无工具合成。
+            leaked = _parse_leaked_tool_calls(answer)
+            if leaked:
+                log.warning(f'模型把 {len(leaked)} 个工具调用写成了 XML 文本，代为执行')
+                await asyncio.to_thread(store.bump, 'recovered_calls')
+                for name, arguments in leaked:
+                    await tool_handler(name, arguments)
         else:
             await asyncio.to_thread(store.bump, 'ungrounded')
             raise RuntimeError(f'两次作答均不合格: {reason}')
