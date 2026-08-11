@@ -197,6 +197,8 @@ def stats() -> dict:
         'tool_calls_total': counters.get('tool_calls', 0),
         'regenerations_total': counters.get('regenerations', 0),
         'ungrounded_total': counters.get('ungrounded', 0),
+        'blocked_input_total': counters.get('blocked_input', 0),
+        'blocked_output_total': counters.get('blocked_output', 0),
         'questions_today': int(today['total']),
         'users_today': int(today['users']),
         'active_contexts': int(contexts['scopes']),

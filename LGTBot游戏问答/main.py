@@ -29,14 +29,14 @@ from core.plugin.decorators import handler, on_load, on_unload
 from core.plugin.web_pages import register_page, unregister_page
 
 from .app import (
-    central, config, conflict, games, ratelimit, sandbox, store, tools, webpanel,
+    central, config, conflict, games, ratelimit, safety, sandbox, store, tools, webpanel,
 )
 
 __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.2.0',
+    'version': '1.3.0',
     'license': 'MIT',
 }
 
@@ -212,6 +212,39 @@ def _grounding_problem(answer: str, used: set, seen: set, current: dict) -> str:
     return ''
 
 
+async def _input_rejected(current: dict, text: str) -> bool:
+    """用户提问的入口审核。审核不可用时按 moderation_fail_closed 决定放不放行。"""
+    if not current.get('moderation_enabled'):
+        return False
+    result = await central.moderate_input(current, text)
+    if result.get('flagged'):
+        log.warning('用户输入被内容安全审核拦截')
+        return True
+    if not result.get('available') and current.get('moderation_fail_closed'):
+        log.warning(f'输入审核不可用，按配置阻断: {result.get("error", "")}')
+        return True
+    return False
+
+
+async def _output_rejected(current: dict, text: str) -> bool:
+    """AI 回答的出口审核。
+
+    与入口不同，这里**永远 fail-closed**：审核不可用就不发。发出去的每个字都算
+    机器人自己说的，而回答素材来自玩家上传的游戏源码，宁可回一句「未通过检查」
+    也不能在审核失灵时裸奔。这一点与 AI 聊天陪伴的处理一致。
+    """
+    if not current.get('moderation_enabled') or not str(text or '').strip():
+        return False
+    result = await central.moderate_output(current, text)
+    if result.get('flagged'):
+        log.warning('AI 输出被内容安全审核拦截')
+        return True
+    if not result.get('available'):
+        log.warning(f'输出审核不可用，按严格策略阻断: {result.get("error", "")}')
+        return True
+    return False
+
+
 def _with_disclaimer(answer: str, current: dict) -> str:
     """给 AI 答案附上免责声明。
 
@@ -249,6 +282,8 @@ async def _answer(event, question: str) -> None:
         return
 
     scope = _scope(event)
+    # 入口审核放在限流占位之后、调用模型之前：违规提问不该消耗模型额度，
+    # 也不该进上下文库。占位已经拿到，所以要走 finally 释放 —— 用 try 包住。
     tool_calls = 0
     used_tools: set = set()
     seen_paths: set = set()
@@ -264,6 +299,10 @@ async def _answer(event, question: str) -> None:
     message_id = None
     try:
         await asyncio.to_thread(store.bump, 'questions')
+        if await _input_rejected(current, question):
+            await asyncio.to_thread(store.bump, 'blocked_input')
+            await _reply(event, str(current.get('moderation_blocked_response') or ''))
+            return
         history = await asyncio.to_thread(
             store.history, scope,
             int(current.get('context_messages') or 8),
@@ -309,16 +348,42 @@ async def _answer(event, question: str) -> None:
         limit = int(current.get('answer_max_chars') or 1500)
         if len(answer) > limit:
             answer = answer[:limit] + '…'
-        await asyncio.to_thread(
-            store.append, scope, 'assistant', answer,
-            int(current.get('max_stored_messages') or 200),
+
+        # ---- 出口把关：截断之后、入库与发送之前 ----
+        # 顺序是有意的：先做确定性过滤（违规词 / IP 脱敏），再送模型复审 ——
+        # 前者零成本且不会失灵，能先削掉一部分，也避免把 IP 原文送去外部审核。
+        answer, hit_word = safety.safe_output(
+            answer,
+            current.get('blocked_words') or [],
+            str(current.get('blocked_response') or ''),
         )
+        blocked = bool(hit_word)
+        if hit_word:
+            log.warning('AI 输出命中违规词，已替换为安全回复')
+        elif await _output_rejected(current, answer):
+            answer = str(current.get('moderation_blocked_response') or '')
+            blocked = True
+        if blocked:
+            await asyncio.to_thread(store.bump, 'blocked_output')
+            # 连这一轮的提问一起撤回：违规答案不入库，光留个没有回复的提问会让
+            # 下一轮的历史出现悬空的 user 消息，反而干扰模型。
+            if message_id is not None:
+                await asyncio.to_thread(store.remove, message_id)
+                message_id = None
+        else:
+            # 只有真正通过审核的答案才进上下文库：违规文本一旦入库，
+            # 下一轮会当历史回灌给模型，等于把污染留在会话里。
+            await asyncio.to_thread(
+                store.append, scope, 'assistant', answer,
+                int(current.get('max_stored_messages') or 200),
+            )
+            answer = _with_disclaimer(answer, current)
         await asyncio.to_thread(store.record_usage, user_id)
         await asyncio.to_thread(store.bump, 'answers')
         if tool_calls:
             await asyncio.to_thread(store.bump, 'tool_calls', tool_calls)
-        # 免责声明在入库之后才拼：上下文里存的是干净答案，不会随历史回灌给模型
-        await _reply(event, _with_disclaimer(answer, current))
+        # 被拦下时发的是插件自己的固定话术，不挂免责声明（那不是 AI 的回答）
+        await _reply(event, answer)
     except Exception as error:
         # 失败时撤回刚写入的提问，别在上下文里留下没有答复的半截对话
         if message_id is not None:

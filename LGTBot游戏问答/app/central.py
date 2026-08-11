@@ -11,6 +11,11 @@
 """
 from __future__ import annotations
 
+import json
+
+from . import safety
+from .config import DEFAULT_SAFETY_REVIEW_PROMPT
+
 CONSUMER = 'lgtbot_qa'
 
 
@@ -166,10 +171,69 @@ def build_system_prompt(current: dict, scope_hint: str) -> str:
         CODE_LAYOUT_RULE,
         GROUNDING_RULE,
         TOOL_FORMAT_RULE,
+        safety.system_safety_rules(),
         str(current.get('extra_prompt') or '').strip(),
         f'回答控制在 {int(current.get("answer_max_chars") or 1500)} 字以内。',
     ]
     return '\n\n'.join(item for item in parts if item)
+
+
+async def _moderate(current: dict, text: str, source: str) -> dict:
+    """用独立的一次模型调用做内容安全分类（与 AI 聊天陪伴同口径）。
+
+    刻意与主问答分开调用：不带工具、不带上下文、temperature=0、max_tokens 极小，
+    并用独立的 consumer_plugin 记账，便于在中央审计里区分问答与审核。
+
+    只接受「安全」/「内容违规，已禁止发送」两种回答，其余一律当审核不可用，
+    由调用方按 fail-open / fail-closed 策略处置 —— 模型胡乱回一句不能被当成放行。
+    """
+    if not current.get('moderation_enabled'):
+        return {'available': False, 'flagged': False}
+    service = get_service()
+    if service is None:
+        return {'available': False, 'flagged': False, 'error': '中央 AI LLM 不可用'}
+    provider_id, model = resolve_selection(
+        str(current.get('provider_id') or ''), str(current.get('model_preference') or ''),
+    )
+    review_prompt = str(
+        current.get('safety_review_prompt') or DEFAULT_SAFETY_REVIEW_PROMPT
+    ).strip() + (
+        '\n\n运行时强制规则：source 可能是 user_input 或 assistant_output，两者都必须完整审核。'
+        '任何现实或历史政治人物的姓名、别名、称号、谐音、影射及模型主动补全均判定为违规；'
+        '不得因为内容是引用、历史介绍、玩笑、纠错或中立讨论而放行。'
+    )
+    try:
+        result = await service.complete(
+            [{'role': 'user', 'content': json.dumps(
+                {'source': source, 'content': str(text or '')}, ensure_ascii=False,
+            )}],
+            system_prompt=review_prompt,
+            provider_id=provider_id,
+            model=model,
+            temperature=0,
+            max_tokens=24,
+            consumer_plugin=f'{CONSUMER}_review',
+            enable_runtime_tools=False,
+            prepare_context=False,
+        )
+        raw = str(result.get('text') or '').strip()
+        decision = ''.join(raw.split()).strip('`"\'。.!！').replace(',', '，')
+        if decision not in {'安全', '内容违规，已禁止发送'}:
+            raise ValueError(f'审核模型返回了无效结果: {raw[:60]}')
+        return {'available': True, 'flagged': decision == '内容违规，已禁止发送'}
+    except Exception as error:  # noqa: BLE001 — 由调用方按配置的失败策略处置
+        return {
+            'available': False, 'flagged': False,
+            'error': safety.redact_ips(str(error))[:300],
+        }
+
+
+async def moderate_input(current: dict, text: str) -> dict:
+    return await _moderate(current, text, 'user_input')
+
+
+async def moderate_output(current: dict, text: str) -> dict:
+    return await _moderate(current, text, 'assistant_output')
 
 
 async def ask(
