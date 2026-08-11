@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.6.2',
+    'version': '1.6.3',
     'license': 'MIT',
 }
 
@@ -87,8 +87,10 @@ def _is_owner(event) -> bool:
 async def _reply(event, text: str) -> None:
     """群聊里带上 @提问人，避免多人同时问时对不上号。
 
-    @ 之后必须换行：正文常以 markdown 结构开头（列表、引用、标题），跟 @ 挤在
-    同一行会让解析器把整行当普通文本，markdown 直接失效。
+    @ 与正文之间用**两个**换行，不是一个：markdown 里单个换行只是软换行，
+    渲染出来就是个空格，@ 和正文还是挤在同一行；两个换行才是段落分隔，
+    正文开头的列表、引用、标题才能被当成块级元素解析。
+    免责声明与正文之间同样用 \\n\\n，口径一致。
     """
     content = str(text or '').strip()
     if not content:
@@ -96,7 +98,7 @@ async def _reply(event, text: str) -> None:
     if getattr(event, 'is_group', False):
         mention = f'<@{event.user_id}>'
         if not content.startswith(mention):
-            content = f'{mention}\n{content}'
+            content = f'{mention}\n\n{content}'
     await event.reply(content)
 
 
