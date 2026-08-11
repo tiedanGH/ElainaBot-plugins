@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.5.0',
+    'version': '1.5.1',
     'license': 'MIT',
 }
 
@@ -494,10 +494,12 @@ async def _answer(event, question: str) -> None:
                 result = await central.ask(
                     current, payload, system_prompt, tool_handler, scope,
                 )
-            elif transcript:
-                # 已经检索到东西了，只是最后一步没写出答案（实测卡在占位符）。
-                # 这一轮**彻底不带工具**：中央模块的 XML 协议提示词随 tools 一起
-                # 消失，占位符也就无从产生，模型只能基于结果写答案。
+            elif used_tools & _CONTENT_TOOLS:
+                # 注意条件是「调用过**内容**工具」，不是「transcript 非空」——
+                # list_games / list_dir 只给目录清单，拿它去合成只会得出「没有查到」。
+                # 实测踩过：模型只调了 list_games 就作答，被闸拦下后我却拿这份清单
+                # 去合成，于是回了「没有查到关于…的规则」，而代码其实在那儿。
+                # 只有真读到过源码，合成才有意义；否则要让它带着工具重新去查。
                 log.warning(f'答案不合格({reason})，改用无工具合成兜底')
                 await asyncio.to_thread(store.bump, 'synthesized')
                 result = await central.synthesize(
