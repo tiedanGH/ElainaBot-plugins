@@ -254,7 +254,12 @@ def _read_game_source(current: dict, arguments: dict) -> dict:
     except (sandbox.SandboxError, OSError) as error:
         return {'ok': False, 'game': item['name'], 'error': str(error)}
 
-    budget = int(current.get('game_source_max_chars') or 60000)
+    # 取「单次整包上限」与「本轮总输入预算」的较小者：后者是接口的字符硬上限
+    # 折算出来的，超了直接 HTTP 413，再大的单次上限也没意义。
+    budget = min(
+        int(current.get('game_source_max_chars') or 24000),
+        int(current.get('input_budget_chars') or 30000),
+    )
     focus = str(arguments.get('focus') or '').strip().casefold()
     files = []
     for entry in entries:

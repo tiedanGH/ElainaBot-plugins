@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.4.1',
+    'version': '1.5.0',
     'license': 'MIT',
 }
 
@@ -231,7 +231,124 @@ def _grounding_problem(answer: str, used: set, seen: set, current: dict) -> str:
     return ''
 
 
-def _transcript_text(transcript: list, limit: int = 60000) -> str:
+_OVERFLOW_MARKERS = (
+    'context_length_exceeded', '413', '超过最大长度', '超最大字符限制',
+    'maximum context length', 'too many tokens', 'input too long', '10030301',
+)
+
+
+def _context_overflow(error: Exception) -> bool:
+    """是不是撞上了接口的输入长度硬上限。
+
+    这类失败重试没用 —— 同样的输入还是超。必须让管理员把预算调下来，
+    所以要和普通网络故障区分开，日志给出可操作的指引。
+    """
+    text = str(error).casefold()
+    return any(marker.casefold() in text for marker in _OVERFLOW_MARKERS)
+
+
+# 截断后必须附的说明。措辞很重要：模型看到残缺内容时，默认会当成「源码里就这些」，
+# 进而下错结论 —— 必须明说这是长度限制导致的，并给出补查的办法。
+_TRUNCATED_NOTE = (
+    '本次结果因输入上限被截断，不代表源码里只有这些。'
+    '需要更多内容时缩小范围再查（如指定 focus 或用 read_file 按行号读）。'
+)
+
+
+def _tool_budget(current: dict, payload: list, system_prompt: str) -> int:
+    """本轮工具结果还能占多少字符。
+
+    ``input_budget_chars`` 是**整个请求**的输入上限（对标接口的硬限制）。
+    工具结果的额度要把这一轮真实的固定开销全扣掉：
+
+      系统提示词 + 工具 schema + 中央模块追加的 XML 协议提示词 + 历史 + 问题
+
+    实测这些合计约 9000 字符（其中 tools schema 就有 2700）。写死一个估值不靠谱 ——
+    历史长了照样 413，所以每轮实测扣减，历史变长会自动收紧。
+    """
+    limit = int(current.get('input_budget_chars') or 34000)
+    fixed = len(system_prompt) + _result_size(payload) + _TOOLS_SCHEMA_CHARS
+    return max(2000, limit - fixed - _PROTOCOL_RESERVE)
+
+
+# 中央模块会把 tools schema 原样发给接口，也会追加一段 XML 兼容协议提示词，
+# 两者都算在输入里，必须一并扣掉。
+_TOOLS_SCHEMA_CHARS = len(json.dumps(tools.TOOLS_SCHEMA, ensure_ascii=False))
+_PROTOCOL_RESERVE = 1200
+
+
+def _result_size(result) -> int:
+    """工具结果回灌给模型时占的字符数（中央模块用 json.dumps 序列化）。"""
+    try:
+        return len(json.dumps(result, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return len(str(result))
+
+
+def _fit_result(result: dict, allowance: int) -> dict:
+    """把工具结果压进剩余预算。
+
+    接口对**输入总字符**有硬上限（实测 40000，超了直接 HTTP 413 整轮报废），
+    而工具结果是一轮轮累加进 messages 的。所以不能只管单次调用的大小，
+    必须按本轮累计预算裁剪。
+
+    裁剪顺序：先砍最占地方的正文 content，再截列表类结果，且一定要告诉模型
+    「这里被截断了」—— 否则它会把截断当成「代码里就这些」，得出错误结论。
+    """
+    # 预算见底：只回一句极短的说明。这条不能省 —— 模型必须知道「不是没有内容，
+    # 而是这轮读不下了」，否则会当作源码里就没有。
+    if allowance < 120:
+        return {'ok': True, 'truncated': True, 'note': '本轮检索已达输入上限。'}
+    trimmed = dict(result)
+    body = str(trimmed.get('content') or '')
+    if body:
+        marker = '\n…（内容因输入上限被截断，未展示完）'
+        # 直接拿「正文清空、但 note/truncated 都已就位」的副本量一次真实开销。
+        # 手算容易漏掉后加字段的键名与 JSON 引号，一漏就刚好越界、白白退化成最小集。
+        probe = dict(trimmed, content='', truncated=True, note=_TRUNCATED_NOTE)
+        keep = max(0, allowance - _result_size(probe) - len(marker))
+        if keep < len(body):
+            trimmed['truncated'] = True
+            trimmed['note'] = _TRUNCATED_NOTE
+            trimmed['content'] = body[:keep] + marker
+            # JSON 转义会让正文膨胀（换行 \n、引号 \" 各占两字符），按估算切完
+            # 仍可能差几个字符越界。量一次真实序列化长度再收紧，避免为了一两个
+            # 字符就退化成信息量小得多的最小集。
+            for _ in range(3):
+                excess = _result_size(trimmed) - allowance
+                if excess <= 0:
+                    break
+                keep = max(0, keep - excess - 8)
+                trimmed['content'] = body[:keep] + marker
+    for key in ('matches', 'games', 'entries'):
+        items = trimmed.get(key)
+        while isinstance(items, list) and items and _result_size(trimmed) > allowance:
+            items = items[: max(1, len(items) // 2)]
+            trimmed[key] = items
+            trimmed['truncated'] = True
+    if trimmed.get('truncated'):
+        trimmed['note'] = _TRUNCATED_NOTE
+    if _result_size(trimmed) <= allowance:
+        return trimmed
+    # 光截正文还不够 —— files_omitted / hint 这些结构性字段本身就可能超预算。
+    # 退回到只保留「模型还能用得上」的最小集，硬压进 allowance。
+    minimal = {
+        key: trimmed[key] for key in ('ok', 'game', 'dir', 'path', 'files_included')
+        if key in trimmed
+    }
+    minimal['truncated'] = True
+    minimal['note'] = '结果因输入上限被大幅截断，需要细节请缩小范围重查。'
+    overflow = _result_size(minimal) - allowance
+    if overflow > 0 and isinstance(minimal.get('files_included'), list):
+        minimal.pop('files_included')
+    body = str(trimmed.get('content') or '')
+    room = allowance - _result_size(minimal)
+    if body and room > 40:
+        minimal['content'] = body[:room - 40] + '…（截断）'
+    return minimal
+
+
+def _transcript_text(transcript: list, limit: int = 30000) -> str:
     """把这一轮真实拿到的工具结果拼成给模型看的文本。
 
     倒序截断：越靠后的检索越贴近模型当时的意图，超预算时优先保住它们。
@@ -326,16 +443,28 @@ async def _answer(event, question: str) -> None:
     used_tools: set = set()
     seen_paths: set = set()
     transcript: list = []
+    budget = 0        # 工具结果额度，进 try 后按本轮实际开销算出
+    spent = 0
 
     async def tool_handler(name: str, arguments: dict):
-        nonlocal tool_calls
+        nonlocal tool_calls, spent
         tool_calls += 1
         result = await tools.run(name, arguments, current)
         used_tools.add(str(name))
-        _collect_paths(str(name), result, seen_paths)
-        # 留一份检索结果：作答失败时靠它走「不带工具的合成兜底」
+        # 先按剩余预算裁剪再回灌：工具结果是一轮轮累加进 messages 的，
+        # 不控总量迟早撞上接口的输入字符硬上限（HTTP 413，整轮报废）
         if isinstance(result, dict) and result.get('ok'):
+            size = _result_size(result)
+            if spent + size > budget:
+                log.info(f'工具 {name} 结果 {size} 字符超出剩余预算，已裁剪')
+                result = _fit_result(result, budget - spent)
+                size = _result_size(result)
+            spent += size
+            _collect_paths(str(name), result, seen_paths)
+            # 留一份检索结果：作答失败时靠它走「不带工具的合成兜底」
             transcript.append((str(name), result))
+        else:
+            _collect_paths(str(name), result, seen_paths)
         return result
 
     message_id = None
@@ -356,6 +485,7 @@ async def _answer(event, question: str) -> None:
         )
         payload = [*history, {'role': 'user', 'content': question}]
         system_prompt = central.build_system_prompt(current, _scope_hint(current))
+        budget = _tool_budget(current, payload, system_prompt)
         answer, reason = '', ''
         # 第一轮带工具正常检索；不合格时分两条路补救，两条都失败才报错 ——
         # 编造的规则比「查询失败」危害大得多。
@@ -371,7 +501,8 @@ async def _answer(event, question: str) -> None:
                 log.warning(f'答案不合格({reason})，改用无工具合成兜底')
                 await asyncio.to_thread(store.bump, 'synthesized')
                 result = await central.synthesize(
-                    current, payload, system_prompt, _transcript_text(transcript), scope,
+                    current, payload, system_prompt,
+                    _transcript_text(transcript, budget), scope,
                 )
             else:
                 # 一次都没检索成功，工具那步就崩了 —— 带纠正指令重来
@@ -444,8 +575,18 @@ async def _answer(event, question: str) -> None:
         if message_id is not None:
             await asyncio.to_thread(store.remove, message_id)
         await asyncio.to_thread(store.bump, 'failures')
-        log.warning(f'问答失败: {type(error).__name__}: {error}')
-        await _reply(event, '查询失败了，稍后再试一次；如果一直失败请联系管理员。')
+        if _context_overflow(error):
+            # 接口有输入字符硬上限，撞上就整轮报废。这不是偶发故障，靠重试解决不了，
+            # 必须在面板把「输入预算」调到模型上限之下，所以日志要说清楚怎么改。
+            await asyncio.to_thread(store.bump, 'overflows')
+            log.error(
+                f'输入超出接口字符上限（当前预算 {budget}，本轮工具结果已用 {spent}）。'
+                f'请在面板把「输入预算」调小到模型上限以下: {str(error)[:200]}'
+            )
+            await _reply(event, '这个问题涉及的代码太多，超出了模型单次可读的长度，换个更具体的问法试试。')
+        else:
+            log.warning(f'问答失败: {type(error).__name__}: {error}')
+            await _reply(event, '查询失败了，稍后再试一次；如果一直失败请联系管理员。')
     finally:
         ratelimit.release(user_id)
 

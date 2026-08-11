@@ -113,12 +113,14 @@ td code{font-size:11px;color:var(--text3)}
       <div><label>冷却（秒 / 人）</label><input type="number" id="cooldown_seconds"></div>
       <div><label>每日上限（次 / 人，0=不限）</label><input type="number" id="daily_limit"></div>
       <div><label>回答字数上限</label><input type="number" id="answer_max_chars"></div>
+      <div><label>输入预算（字符 / 轮）</label><input type="number" id="input_budget_chars"></div>
       <div><label>整包读取上限（字符）</label><input type="number" id="game_source_max_chars"></div>
       <div><label>单次搜索命中上限</label><input type="number" id="search_max_matches"></div>
       <div><label>单次读取行数上限</label><input type="number" id="read_max_lines"></div>
       <div><label>可读文件体积上限（字节）</label><input type="number" id="file_max_bytes"></div>
     </div>
     <div class="row"><input type="checkbox" id="owner_unlimited"><span>主人不受冷却与每日上限约束</span></div>
+    <p class="hint"><b>输入预算</b>是本轮所有工具结果合计能占的字符数，必须低于所选模型的输入上限，否则接口直接返回 HTTP 413、整轮问答报废。除工具结果外，系统提示词与历史还要占几千字符，默认 30000 是按 40000 上限留的余量。<b>换用上限更小的模型（如 9000）务必同步调小。</b>「整包读取上限」实际生效值取二者较小者。</p>
     <div class="grid" style="margin-top:10px">
       <div><label>冷却话术（{seconds}）</label><input type="text" id="cooldown_reply"></div>
       <div><label>超限话术（{limit}）</label><input type="text" id="daily_limit_reply"></div>
@@ -196,7 +198,8 @@ const BOOLS = ['enabled','group_enabled','direct_enabled','owner_unlimited',
   'moderation_enabled','moderation_fail_closed'];
 const NUMS = ['priority','temperature','max_tokens','max_tool_rounds','context_messages',
   'context_expire_seconds','cooldown_seconds','daily_limit','answer_max_chars',
-  'game_source_max_chars','search_max_matches','read_max_lines','file_max_bytes'];
+  'input_budget_chars','game_source_max_chars','search_max_matches','read_max_lines',
+  'file_max_bytes'];
 const TEXTS = ['prefix','lgtbot_dir','system_prompt','extra_prompt','cooldown_reply',
   'daily_limit_reply','busy_reply','trigger_mode','disclaimer',
   'safety_review_prompt','blocked_response','moderation_blocked_response'];
@@ -309,6 +312,7 @@ async function loadStats() {
       ['questions_total', '累计提问'], ['answers_total', '累计成功'],
       ['failures_total', '累计失败'], ['tool_calls_total', '累计工具调用'],
       ['regenerations_total', '接地重试'], ['synthesized_total', '合成兜底'],
+      ['overflows_total', '超长失败'],
       ['ungrounded_total', '拦下的臆造'],
       ['blocked_input_total', '拦下的输入'], ['blocked_output_total', '拦下的输出'],
       ['active_contexts', '活跃会话'],

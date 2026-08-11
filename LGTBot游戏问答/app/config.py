@@ -128,9 +128,18 @@ DEFAULT_CONFIG = {
 
     # ---- 检索限额（防止单次把上下文撑爆）----
     'answer_max_chars': 1500,
-    # read_game_source 单次能塞多少字符。68 个游戏中位 27KB、83% 在 60KB 以内，
-    # 60000 能让绝大多数游戏一次读全；超出的按 focus 关键词挑文件。
-    'game_source_max_chars': 60000,
+
+    # 单次请求的**总输入**字符上限，直接对标接口限制。
+    # 接口普遍对输入有硬上限（实测某接口 deepseek/qwen3 系 40000、jiutian 只有 9000），
+    # 超了返回 HTTP 413，整轮问答报废、重试也没用。
+    # 留给工具结果的额度 = 本值 − 系统提示词 − 工具 schema − 历史 − 问题，
+    # 由 main.py 每轮实测扣减，历史变长会自动收紧，不必手工估。
+    # 默认 34000 是按 40000 上限留 15% 余量；**换用上限更小的模型务必同步调小**。
+    'input_budget_chars': 34000,
+
+    # read_game_source 单次上限。按字符计 68 个游戏中位 24840、最大 328102，
+    # 实际生效值还要再受上面的动态额度约束，取两者较小者。
+    'game_source_max_chars': 26000,
     'search_max_matches': 60,
     'read_max_lines': 400,
     'file_max_bytes': 400000,
@@ -252,7 +261,8 @@ _INT_FIELDS = {
     'cooldown_seconds': (0, 3600),
     'daily_limit': (0, 10000),
     'answer_max_chars': (100, 8000),
-    'game_source_max_chars': (5000, 400000),
+    'input_budget_chars': (2000, 400000),
+    'game_source_max_chars': (2000, 400000),
     'search_max_matches': (5, 300),
     'read_max_lines': (20, 2000),
     'file_max_bytes': (10000, 2000000),

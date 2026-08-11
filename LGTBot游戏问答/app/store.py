@@ -197,6 +197,7 @@ def stats() -> dict:
         'tool_calls_total': counters.get('tool_calls', 0),
         'regenerations_total': counters.get('regenerations', 0),
         'synthesized_total': counters.get('synthesized', 0),
+        'overflows_total': counters.get('overflows', 0),
         'ungrounded_total': counters.get('ungrounded', 0),
         'blocked_input_total': counters.get('blocked_input', 0),
         'blocked_output_total': counters.get('blocked_output', 0),
