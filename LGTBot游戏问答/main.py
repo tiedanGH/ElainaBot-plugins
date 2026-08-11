@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.7.1',
+    'version': '1.7.2',
     'license': 'MIT',
 }
 
@@ -49,6 +49,15 @@ PAGE_KEY = 'lgtbot-qa'
 # 装饰器参数在导入期求值，此时 on_load 还没跑，只能裸读配置文件。
 # 改了优先级要重载插件才生效（重载会重新导入本模块）。
 PRIORITY = int(config.bootstrap(DATA_DIR, 'priority', 200))
+
+# @ 兜底 handler 是否拦截后续插件。
+# block 在**匹配阶段**就 break（core/plugin/_dispatch.py:269），函数体提前 return
+# 也收不回来。全量群下本 handler 的 `.*` 会匹配每一条消息，于是把群里所有消息
+# 都从低优先级插件那儿吞掉 —— 那些插件根本收不到。
+# 装在全量群、且同 bot 还有别的插件要处理非 @ 消息时，把这项设为 false。
+BLOCK_OTHERS = bool(config.bootstrap(DATA_DIR, 'block_others', True))
+
+_last_swallow_warn = 0.0
 
 MESSAGE_EVENTS = [
     'GROUP_AT_MESSAGE_CREATE',
@@ -100,6 +109,28 @@ async def _reply(event, text: str) -> None:
         if not content.startswith(mention):
             content = f'{mention}\n\n{content}'
     await event.reply(content)
+
+
+def _warn_swallow(event) -> None:
+    """全量群里吃到非 @ 消息时告警（每 10 分钟最多一条）。
+
+    走到这里说明该群开了全量（non_at_message），框架没有把非 @ 消息挡掉，
+    本 handler 的 `.*` 匹配上了。函数体 return 能保证**不回复**，但
+    block 是在匹配阶段就生效的，那条消息对更低优先级的插件已经不可见了。
+    真发生了就得让管理员知道，否则只会看到「某插件在这个群失灵」。
+    """
+    global _last_swallow_warn
+    if not BLOCK_OTHERS:
+        return          # 没开拦截就不存在吞消息，不用吵
+    now = time.monotonic()
+    if now - _last_swallow_warn < 600:
+        return
+    _last_swallow_warn = now
+    log.warning(
+        f'群 {getattr(event, "group_id", "")} 已开启全量消息，本插件的 @ 兜底 handler '
+        f'会匹配并**拦截**非 @ 消息（不会回复，但更低优先级的插件收不到了）。'
+        f'同 bot 还有别的插件要处理非 @ 消息时，请在面板把「拦截后续插件」关掉。'
+    )
 
 
 def _scene_allowed(event, current: dict) -> bool:
@@ -804,14 +835,22 @@ def _scope_hint(current: dict) -> str:
 
 
 async def _maybe_prune(current: dict) -> None:
+    """定期清理过期上下文。纯清理动作，失败绝不打断这一轮问答。
+
+    它在 _answer **之前**调用，早期版本直接抛异常，热重载关掉存储时会让整个
+    handler 在真正开始干活前就死掉 —— 跟统计写入是同一类问题，一并兜住。
+    """
     global _last_prune
     now = time.monotonic()
     if now - _last_prune < 600:
         return
     _last_prune = now
-    await asyncio.to_thread(
-        store.prune_expired, int(current.get('context_expire_seconds') or 3600),
-    )
+    try:
+        await asyncio.to_thread(
+            store.prune_expired, int(current.get('context_expire_seconds') or 3600),
+        )
+    except Exception as error:  # noqa: BLE001 — 清理失败不值得中断问答
+        log.debug(f'清理过期上下文失败: {error}')
 
 
 # ==================== 生命周期 ====================
@@ -947,18 +986,26 @@ async def prefix_command(event, match) -> None:
     desc='@机器人直接提问 LGTBot 游戏规则与结算',
     priority=PRIORITY,
     event_types=MESSAGE_EVENTS,
-    block=True,
+    block=BLOCK_OTHERS,
 )
 async def at_message(event, match) -> None:
     """@ 兜底提问。
 
-    刻意**不**设 ignore_at_check —— 框架据此把群内非 @ 消息挡在外面
-    （_dispatch.py:238），本 handler 只吃 @机器人 的消息和私聊。
+    不设 ignore_at_check **不等于**只吃 @ 消息 —— 框架那道闸是
+    ``if is_non_at and not ignore_at_check and not non_at_ok: continue``
+    （core/plugin/_dispatch.py:238）。**全量群**下 non_at_ok 为真，这条 continue
+    不执行，本 handler 的 ``.*`` 就会吃下群里每一条消息。
+    所以必须在函数体里自己再过一道 is_at_self —— LGTBot 自己的消息派发也是
+    这么做的（mod/dispatcher.py 里同样强制复查一次）。
     """
     current = config.load()
     if not current.get('enabled') or str(current.get('trigger_mode')) == 'prefix':
         return
     if getattr(event, 'is_bot', False) or not _scene_allowed(event, current):
+        return
+    # 群里必须真的 @ 了本机器人。私聊 / 频道私信没有「@」概念，不受此限。
+    if getattr(event, 'is_group', False) and not getattr(event, 'is_at_self', False):
+        _warn_swallow(event)
         return
     question = str(match.group(1) or '').strip()
     if not question or question.startswith('/'):

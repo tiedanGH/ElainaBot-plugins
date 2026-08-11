@@ -83,7 +83,8 @@ td code{font-size:11px;color:var(--text3)}
     </div>
     <div class="row"><input type="checkbox" id="group_enabled"><span>群聊生效</span></div>
     <div class="row"><input type="checkbox" id="direct_enabled"><span>私聊生效</span></div>
-    <p class="hint">优先级改动需重载插件才生效（装饰器在导入期读取）。<code>at</code> 模式注册的是 <code>.*</code> + <code>block=True</code> 兜底，务必确认本插件与 LGTBot_ElainaBot 绑定在不同 bot 上。</p>
+    <div class="row"><input type="checkbox" id="block_others"><span>拦截后续插件（block）——<b>全量群务必留意</b></span></div>
+    <p class="hint">优先级改动需重载插件才生效（装饰器在导入期读取）。<code>at</code> 模式注册的是 <code>.*</code> 兜底。群聊里函数体会强制复查 <code>is_at_self</code>，<b>只有真的 @ 了机器人才会回答</b>。<br><b>全量群注意：</b>框架不会把非 @ 消息挡在外面，本兜底仍会匹配到它们；<code>block</code> 在匹配阶段就生效，那些消息会被从低优先级插件那儿吞掉（本插件不回复）。同 bot 还有别的插件要处理非 @ 消息时，把上面的「拦截后续插件」关掉。务必确认本插件与 LGTBot_ElainaBot 绑定在不同 bot 上。</p>
   </div>
 
   <div class="card">
@@ -200,7 +201,7 @@ const $ = id => document.getElementById(id);
 let state = {};
 
 const BOOLS = ['enabled','group_enabled','direct_enabled','owner_unlimited',
-  'moderation_enabled','moderation_fail_closed','error_detail_enabled'];
+  'moderation_enabled','moderation_fail_closed','error_detail_enabled','block_others'];
 const NUMS = ['priority','temperature','max_tokens','max_tool_rounds','context_messages',
   'context_expire_seconds','cooldown_seconds','daily_limit','answer_max_chars',
   'input_budget_chars','game_source_max_chars','search_max_matches','read_max_lines',

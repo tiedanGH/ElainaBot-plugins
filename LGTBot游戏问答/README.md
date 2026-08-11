@@ -24,6 +24,27 @@
 未绑定且检测到 LGTBot 也加载时，插件加载会打 WARNING，面板顶部显示红色横幅。
 不想绑定就把触发方式改成 `prefix`（只有 `/问 xxx` 才命中并拦截）。
 
+### ⚠️ 全量群（non_at_message）另有一坑
+
+框架那道「非 @ 消息过滤」的真实条件是：
+
+```python
+if is_non_at and not h.get('ignore_at_check', False) and not non_at_ok:
+    continue          # core/plugin/_dispatch.py:238
+```
+
+**不设 `ignore_at_check` 不等于「只吃 @ 消息」** —— 全量群下 `non_at_ok` 为真，
+这条 `continue` 不执行，`at` 模式的 `.*` 兜底会匹配群里**每一条**消息。
+
+所以 `at_message` 函数体里强制复查一次 `is_at_self`（LGTBot 自己的消息派发也是
+这么做的）。私聊 / 频道私信没有「@」概念，不受此限。
+
+但 `block` 是在**匹配阶段**生效的，函数体 `return` 收不回来：那些非 @ 消息
+虽然不会被回复，却已经对更低优先级的插件不可见了。所以：
+
+> 同 bot 上还有别的插件要处理非 @ 消息时，把面板的**「拦截后续插件」关掉**
+> （`block_others: false`）。真的在全量群吃到非 @ 消息时，日志每 10 分钟会告警一次。
+
 ---
 
 ## 安装

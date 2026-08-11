@@ -97,6 +97,12 @@ DEFAULT_CONFIG = {
     'trigger_mode': 'at',
     'prefix': '/问',
     'priority': 200,
+
+    # @ 兜底 handler 是否拦截后续插件（block=True）。
+    # 全量群下这个 handler 的 `.*` 会匹配每一条消息，block 又是在匹配阶段生效的，
+    # 于是把群里所有消息从低优先级插件那儿吞掉。同 bot 还有别的插件要处理非 @
+    # 消息时设为 false。改完需重载插件（装饰器参数在导入期读取）。
+    'block_others': True,
     'group_enabled': True,
     'direct_enabled': False,       # 私聊默认不接管，避免和其他 AI 插件抢私信
     'allowed_groups': [],          # 空 = 不限群
