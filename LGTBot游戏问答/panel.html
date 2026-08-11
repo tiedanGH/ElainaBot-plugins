@@ -113,6 +113,7 @@ td code{font-size:11px;color:var(--text3)}
       <div><label>冷却（秒 / 人）</label><input type="number" id="cooldown_seconds"></div>
       <div><label>每日上限（次 / 人，0=不限）</label><input type="number" id="daily_limit"></div>
       <div><label>回答字数上限</label><input type="number" id="answer_max_chars"></div>
+      <div><label>整包读取上限（字符）</label><input type="number" id="game_source_max_chars"></div>
       <div><label>单次搜索命中上限</label><input type="number" id="search_max_matches"></div>
       <div><label>单次读取行数上限</label><input type="number" id="read_max_lines"></div>
       <div><label>可读文件体积上限（字节）</label><input type="number" id="file_max_bytes"></div>
@@ -173,6 +174,7 @@ td code{font-size:11px;color:var(--text3)}
       <div><label>工具</label><select id="probe-tool">
         <option value="list_games">list_games</option>
         <option value="read_game_rule">read_game_rule</option>
+        <option value="read_game_source">read_game_source</option>
         <option value="search_code">search_code</option>
         <option value="read_file">read_file</option>
         <option value="list_dir">list_dir</option>
@@ -194,7 +196,7 @@ const BOOLS = ['enabled','group_enabled','direct_enabled','owner_unlimited',
   'moderation_enabled','moderation_fail_closed'];
 const NUMS = ['priority','temperature','max_tokens','max_tool_rounds','context_messages',
   'context_expire_seconds','cooldown_seconds','daily_limit','answer_max_chars',
-  'search_max_matches','read_max_lines','file_max_bytes'];
+  'game_source_max_chars','search_max_matches','read_max_lines','file_max_bytes'];
 const TEXTS = ['prefix','lgtbot_dir','system_prompt','extra_prompt','cooldown_reply',
   'daily_limit_reply','busy_reply','trigger_mode','disclaimer',
   'safety_review_prompt','blocked_response','moderation_blocked_response'];

@@ -62,6 +62,34 @@ TOOLS_SCHEMA = [
     {
         'type': 'function',
         'function': {
+            'name': 'read_game_source',
+            'description': (
+                '一次性读取某个游戏的**全部源码**（规则 + 所有 .cc/.h），带行号返回。'
+                '问机制、流程、顺序、计分、判定时**首选这个** —— 一次就能看全，'
+                '不用猜该读哪个文件、也不用反复调用 read_file。'
+                '游戏太大装不下时会按 focus 关键词挑最相关的文件，'
+                '并在 files_omitted 里列出没装下的文件，再用 search_code / read_file 补。'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'game': {'type': 'string', 'description': '游戏中文名或目录名。'},
+                    'focus': {
+                        'type': 'string',
+                        'description': (
+                            '可选，本次要了解的关键词（用户问题里的术语即可）。'
+                            '游戏超出体积上限时，据此优先挑含该词的文件。'
+                        ),
+                    },
+                },
+                'required': ['game'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
             'name': 'search_code',
             'description': (
                 '在可检索范围内做**子串**搜索（不是正则），返回匹配的文件、行号和该行内容。'
@@ -198,6 +226,155 @@ def _game_files(current: dict, item: dict) -> list:
         f'{item["path"]}/{entry["name"]}'
         for entry in entries if entry['type'] == 'file'
     ]
+
+
+def _read_game_source(current: dict, arguments: dict) -> dict:
+    """一次性把整个游戏的源码交给模型。
+
+    动机有两个：
+    1) 游戏目录的文件数差异很大（实测 3~13 个），且额外的 .h 往往才是机制所在。
+       让模型自己猜该读哪个，既多绕几轮也容易漏。
+    2) 中央模块的 XML 回退协议本身不稳（见 central.TOOL_FORMAT_RULE），
+       每多一轮工具调用就多一次失败机会。一次读全能把轮数压到最少。
+
+    实测 68 个游戏中位体积 27KB、83% 在 60KB 以内，绝大多数能整包装下。
+    装不下时按 focus 关键词的命中数挑文件，并如实告知哪些没装下。
+    """
+    query = str(arguments.get('game') or '')
+    item = games.resolve(current, query)
+    if item is None:
+        return {
+            'ok': False,
+            'error': f'没有找到游戏「{query}」，请先用 list_games 确认。',
+            'candidates': [entry['name'] for entry in games.search(current)][:40],
+        }
+    try:
+        folder = sandbox.resolve(current, item['path'])
+        entries = sandbox.list_entries(current, folder)
+    except (sandbox.SandboxError, OSError) as error:
+        return {'ok': False, 'game': item['name'], 'error': str(error)}
+
+    budget = int(current.get('game_source_max_chars') or 60000)
+    focus = str(arguments.get('focus') or '').strip().casefold()
+    files = []
+    for entry in entries:
+        if entry['type'] != 'file':
+            continue
+        relative = f'{item["path"]}/{entry["name"]}'
+        try:
+            absolute = sandbox.resolve(current, relative, must_be_file=True)
+            text = sandbox.read_text(absolute, budget * 2)
+        except (sandbox.SandboxError, OSError):
+            continue
+        files.append({
+            'name': entry['name'], 'path': relative, 'text': text,
+            'chars': len(text),
+            'hits': text.casefold().count(focus) if focus else 0,
+        })
+    if not files:
+        return {'ok': False, 'game': item['name'], 'error': '该游戏目录下没有可读的源码文件'}
+
+    total = sum(item_['chars'] for item_ in files)
+    # 有 focus 时留出三成预算给「片段」：命中最多的文件往往也最大（实测某游戏
+    # 的核心 .h 有 111KB），整包装不下就被完全丢掉，而答案恰恰在里面。
+    # 与其一字不给，不如把命中点周围的代码摘出来。
+    whole_budget = int(budget * 0.7) if focus else budget
+    order = sorted(files, key=lambda f: (-_priority(f['name'], f['hits']), f['chars']))
+    included, omitted, used = [], [], 0
+    for entry in order:
+        if used + entry['chars'] <= whole_budget:
+            included.append(entry)
+            used += entry['chars']
+        else:
+            omitted.append(entry)
+    included.sort(key=lambda f: -_priority(f['name'], f['hits']))
+
+    blocks = []
+    for entry in included:
+        numbered = '\n'.join(
+            f'{number}|{line}'
+            for number, line in enumerate(entry['text'].split('\n'), 1)
+        )
+        blocks.append(f'===== {entry["path"]} =====\n{numbered}')
+
+    excerpted = []
+    if focus:
+        for entry in sorted(omitted, key=lambda f: -f['hits']):
+            if entry['hits'] <= 0 or used >= budget:
+                continue
+            snippet = _excerpt(entry['text'], focus, budget - used)
+            if not snippet:
+                continue
+            blocks.append(
+                f'===== {entry["path"]} （片段：含「{focus}」的部分，非全文）=====\n{snippet}'
+            )
+            used += len(snippet)
+            excerpted.append(entry['path'])
+
+    result = {
+        'ok': True,
+        'game': item['name'],
+        'dir': item['dir'],
+        'total_chars': total,
+        'files_included': [entry['path'] for entry in included],
+        'complete': not omitted,
+        'content': '\n\n'.join(blocks),
+    }
+    if excerpted:
+        result['files_excerpted'] = excerpted
+    if omitted:
+        result['files_omitted'] = [
+            {'path': entry['path'], 'chars': entry['chars'],
+             **({'focus_hits': entry['hits']} if focus else {})}
+            for entry in sorted(omitted, key=lambda f: -f['chars'])
+        ]
+        result['hint'] = (
+            f'该游戏共 {total} 字符，超过单次上限 {budget}，以上不是全部内容。'
+            + (f'其中 {"、".join(excerpted)} 只给了含「{focus}」的片段。' if excerpted else '')
+            + '结论涉及 files_omitted 里的文件时，必须再用 search_code 或 read_file 确认，'
+              '不要因为没读到就当作不存在。'
+        )
+    return result
+
+
+def _excerpt(text: str, focus: str, budget: int, context: int = 15) -> str:
+    """摘出含 focus 的行及其上下文，重叠区间合并，带真实行号。
+
+    行号必须是原文行号 —— 模型要靠它给出处，错了就等于捏造。
+    """
+    if budget <= 0:
+        return ''
+    lines = text.split('\n')
+    wanted = set()
+    for number, line in enumerate(lines, 1):
+        if focus in line.casefold():
+            wanted.update(range(max(1, number - context), min(len(lines), number + context) + 1))
+    if not wanted:
+        return ''
+    out, previous = [], 0
+    for number in sorted(wanted):
+        if previous and number > previous + 1:
+            out.append('   …')
+        out.append(f'{number}|{lines[number - 1]}')
+        previous = number
+        if sum(len(item) + 1 for item in out) >= budget:
+            out.append('   …（片段已达上限，其余请用 read_file 按行号读取）')
+            break
+    return '\n'.join(out)
+
+
+# 挑文件的优先级：规则与小配置永远带上，其次是主逻辑，再按 focus 命中数排。
+_NAME_PRIORITY = {
+    'rule.md': 100, 'achievements.h': 90, 'options.h': 88, 'option.cmake': 86,
+    'mygame.cc': 80,
+}
+
+
+def _priority(name: str, hits: int) -> int:
+    base = _NAME_PRIORITY.get(name, 40 if name.endswith('.h') else 30)
+    if name == 'unittest.cc':
+        base = 20        # 测试有参考价值但最后再考虑
+    return base + min(hits, 20) * 2
 
 
 def _normalize_pattern(value) -> str:
@@ -348,6 +525,7 @@ def _list_dir(current: dict, arguments: dict) -> dict:
 _HANDLERS = {
     'list_games': _list_games,
     'read_game_rule': _read_game_rule,
+    'read_game_source': _read_game_source,
     'search_code': _search_code,
     'read_file': _read_file,
     'list_dir': _list_dir,

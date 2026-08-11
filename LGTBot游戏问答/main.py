@@ -36,7 +36,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.3.0',
+    'version': '1.4.0',
     'license': 'MIT',
 }
 
@@ -115,6 +115,17 @@ _LEAKED_TOOL_XML = re.compile(
 )
 
 
+# 中央模块在 XML 回退协议下，会用 '[请求执行工具]' 占住模型只发工具调用、没有正文
+# 的那一轮（modules/ai_llm/app/service.py:1888）。模型在后续轮次看到自己「说过」
+# 这句，就可能照抄成最终答案 —— 实测发生过，用户收到的整条回复就是这七个字。
+# 凡是「整条答案只有一个方括号标记」的，一律是这类内部占位符，不能当答案。
+_PLACEHOLDER_ANSWER = re.compile(r'^\s*[\[【][^\]】]{0,40}[\]】]\s*$')
+
+
+def _placeholder_answer(answer: str) -> bool:
+    return bool(_PLACEHOLDER_ANSWER.match(str(answer or '')))
+
+
 def _leaked_tool_xml(answer: str) -> bool:
     """答案里是否混着没被执行的工具调用 XML。
 
@@ -128,7 +139,7 @@ def _leaked_tool_xml(answer: str) -> bool:
 
 # 真正把内容读进上下文的工具。list_games / list_dir 只给出目录清单，
 # 拿它们当「查过代码」的依据是不够的。
-_CONTENT_TOOLS = {'read_game_rule', 'read_file', 'search_code'}
+_CONTENT_TOOLS = {'read_game_rule', 'read_game_source', 'read_file', 'search_code'}
 
 # 形如 mygame.cc:120 / lgtbot/games/x/achievements.h:10-24 的出处标注
 _CITATION_RE = re.compile(
@@ -159,6 +170,13 @@ def _collect_paths(name: str, result, seen: set) -> None:
     for item in result.get('games') or []:
         if isinstance(item, dict) and item.get('path'):
             seen.add(str(item['path']))
+    # read_game_rule 的 source_files、read_game_source 的 files_included 与
+    # files_excerpted，都是模型真实看到过内容的路径，引用它们不算捏造。
+    # 漏掉 files_excerpted 会把「引用片段里的行号」误判成捏造，答案直接被毙。
+    for key in ('source_files', 'files_included', 'files_excerpted'):
+        for item in result.get(key) or []:
+            if isinstance(item, str):
+                seen.add(item)
     if name == 'list_dir' and own:
         for item in result.get('entries') or []:
             if isinstance(item, dict) and item.get('name'):
@@ -336,6 +354,8 @@ async def _answer(event, question: str) -> None:
             answer = str(result.get('text') or '').strip()
             if not answer:
                 reason = '模型没有返回内容'
+            elif _placeholder_answer(answer):
+                reason = f'回答只是中央模块的内部占位符: {answer[:40]}'
             elif _leaked_tool_xml(answer):
                 reason = '工具调用写成了属性式 XML，实际没有执行'
             else:

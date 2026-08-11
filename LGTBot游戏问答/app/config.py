@@ -56,11 +56,12 @@ DEFAULT_SYSTEM_PROMPT = (
     '\n'
     '【必须先检索再回答】\n'
     '- 你对具体游戏没有任何可靠的先验知识，禁止凭记忆或常识作答。回答前必须用工具读到实际内容。\n'
-    '- 标准流程：list_games 确认是哪个游戏 → read_game_rule 拿规则和真实文件清单 → '
-    'read_file 读清单里的实现文件 → 再作答。跳过任何一步都容易答错。\n'
-    '- 规则、玩法类问题优先读 read_game_rule（rule.md 是作者写给玩家的权威规则）。\n'
-    '- 计分、结算、判负、成就达成条件这类问题，必须读 mygame.cc / achievements.h 的真实实现，'
-    '不能只看 rule.md。rule.md 与代码实现冲突时，以代码为准，并明确指出两者不一致。\n'
+    '- 标准流程：list_games 确认是哪个游戏 → read_game_source 一次读全该游戏源码 → 作答。'
+    '涉及机制、流程、顺序、计分、判定的问题都走这条路，别省这一步。\n'
+    '- 只问「怎么玩」这类纯规则问题时，read_game_rule 就够了，更省。\n'
+    '- read_game_source 报告 files_omitted（游戏太大没装下）时，若结论依赖那些文件，'
+    '必须再用 search_code / read_file 补齐，不要因为没读到就当作不存在。\n'
+    '- rule.md 与代码实现冲突时，以代码为准，并明确指出两者不一致。\n'
     '- 同名或名字相近的游戏可能不止一个（正式版与测试版等），它们的机制未必相同。'
     '拿不准用户指的是哪一个时，先问清楚，不要默认选一个就展开。\n'
     '- 检索不到依据时，直接说「没有查到」，不要猜测、不要用其他游戏的规则套用。\n'
@@ -127,6 +128,9 @@ DEFAULT_CONFIG = {
 
     # ---- 检索限额（防止单次把上下文撑爆）----
     'answer_max_chars': 1500,
+    # read_game_source 单次能塞多少字符。68 个游戏中位 27KB、83% 在 60KB 以内，
+    # 60000 能让绝大多数游戏一次读全；超出的按 focus 关键词挑文件。
+    'game_source_max_chars': 60000,
     'search_max_matches': 60,
     'read_max_lines': 400,
     'file_max_bytes': 400000,
@@ -248,6 +252,7 @@ _INT_FIELDS = {
     'cooldown_seconds': (0, 3600),
     'daily_limit': (0, 10000),
     'answer_max_chars': (100, 8000),
+    'game_source_max_chars': (5000, 400000),
     'search_max_matches': (5, 300),
     'read_max_lines': (20, 2000),
     'file_max_bytes': (10000, 2000000),
