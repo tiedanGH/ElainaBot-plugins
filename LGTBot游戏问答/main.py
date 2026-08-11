@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.7.2',
+    'version': '1.7.3',
     'license': 'MIT',
 }
 
@@ -147,21 +147,37 @@ def _scene_allowed(event, current: dict) -> bool:
 # ==================== 问答主流程 ====================
 
 
-_LEAKED_TOOL_XML = re.compile(
-    r'<\s*(?:'
-    # 方言一：标签名就是工具名（中央模块 _xml_tool_calls 唯一认识的写法）
-    + '|'.join(re.escape(name) for name in tools.TOOL_NAMES)
-    # 方言二：通用包装标签。实测模型会输出
-    #   <tool_calls><tool_call><tool_name>x</tool_name><arg_key>k</arg_key>…
-    # 工具名只作为**文本内容**出现，靠上面那组标签名一个也匹配不到，
-    # 结果整块 XML 原样发给了用户。
-    + r'|/?tool_calls|/?tool_call|/?tool_name|/?arg_key|/?arg_value'
-    + r'|/?function_call|/?invoke|/?parameter'
-    + r')[\s/>]',
-    re.IGNORECASE,
+# 通用包装标签。实测模型会输出
+#   <tool_calls><tool_call><tool_name>x</tool_name><arg_key>k</arg_key>…
+# 工具名只作为**文本内容**出现，靠「标签名 = 工具名」那组一个也匹配不到，
+# 结果整块 XML 原样发给了用户。
+_WRAPPER_TAGS = (
+    r'/?tool_calls|/?tool_call|/?tool_name|/?arg_key|/?arg_value'
+    r'|/?function_call|/?invoke|/?parameter'
 )
+_leaked_re = None
 
-# 解析上面方言二用的三条正则。写死标签名、不做嵌套解析 —— 模型产出的这类文本
+
+def _leaked_pattern():
+    """懒构建泄漏检测正则。
+
+    **不能在模块级去读 tools.TOOL_NAMES**：框架重载时 _register_pkg 直接复用
+    sys.modules 里的旧 app 包、子模块不重新导入（core/plugin/_loader.py:239），
+    而 main.py 是重新执行的。子模块一旦处于半初始化状态，模块级的
+    `tools.TOOL_NAMES` 就会直接让整个插件 enable 失败：
+      module 'plugins.LGTBot游戏问答.app.tools' has no attribute 'TOOL_NAMES'
+    推迟到真正用的时候取，那时 tools 一定已经加载完整。
+    """
+    global _leaked_re
+    if _leaked_re is None:
+        names = '|'.join(re.escape(name) for name in tools.TOOL_NAMES)
+        _leaked_re = re.compile(
+            rf'<\s*(?:{names}|{_WRAPPER_TAGS})[\s/>]', re.IGNORECASE,
+        )
+    return _leaked_re
+
+
+# 解析通用包装方言用的三条正则。写死标签名、不做嵌套解析 —— 模型产出的这类文本
 # 结构很固定，用 ElementTree 反而会因为缺少根节点或未转义字符直接抛错。
 _TOOL_CALL_BLOCK = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL | re.IGNORECASE)
 _TOOL_NAME_TAG = re.compile(r'<tool_name>\s*(.*?)\s*</tool_name>', re.DOTALL | re.IGNORECASE)
@@ -233,7 +249,7 @@ def _leaked_tool_xml(answer: str) -> bool:
     而且中央层还记为 success。这种文本绝不能发给用户 —— 既难看，又意味着
     这一轮压根没检索过任何代码，答案毫无依据。
     """
-    return bool(_LEAKED_TOOL_XML.search(str(answer or '')))
+    return bool(_leaked_pattern().search(str(answer or '')))
 
 
 # 真正把内容读进上下文的工具。list_games / list_dir 只给出目录清单，
@@ -438,14 +454,25 @@ def _tool_budget(current: dict, payload: list, system_prompt: str) -> int:
     历史长了照样 413，所以每轮实测扣减，历史变长会自动收紧。
     """
     limit = int(current.get('input_budget_chars') or 34000)
-    fixed = len(system_prompt) + _result_size(payload) + _TOOLS_SCHEMA_CHARS
+    fixed = len(system_prompt) + _result_size(payload) + _tools_schema_chars()
     return max(2000, limit - fixed - _PROTOCOL_RESERVE)
 
 
-# 中央模块会把 tools schema 原样发给接口，也会追加一段 XML 兼容协议提示词，
-# 两者都算在输入里，必须一并扣掉。
-_TOOLS_SCHEMA_CHARS = len(json.dumps(tools.TOOLS_SCHEMA, ensure_ascii=False))
+# 中央模块追加的 XML 兼容协议提示词，也算在输入里
 _PROTOCOL_RESERVE = 1200
+_schema_chars = 0
+
+
+def _tools_schema_chars() -> int:
+    """tools schema 序列化后的字符数（中央模块会把它原样发给接口，算输入）。
+
+    与 _leaked_pattern 同理：懒取，不在模块级碰 tools 的属性 —— 重载时子模块
+    可能处于半初始化状态，模块级访问会让整个插件 enable 失败。
+    """
+    global _schema_chars
+    if not _schema_chars:
+        _schema_chars = len(json.dumps(tools.TOOLS_SCHEMA, ensure_ascii=False))
+    return _schema_chars
 
 
 def _result_size(result) -> int:
