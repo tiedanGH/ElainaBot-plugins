@@ -406,6 +406,26 @@ XML 回退协议本身不稳，每多一轮工具调用就多一次失败机会 
 | 标签名=工具名 | `<search_code><query>x</query></search_code>` | ✅ 唯一认识的 |
 | 属性式 | `<search_code query="x"/>` | ❌ 解析不出 |
 | 通用包装 | `<tool_call><tool_name>search_code</tool_name><arg_key>query</arg_key>…` | ❌ 解析不出 |
+| DSML（GLM 系） | `<\|DSML\|invoke name="search_code"><\|DSML\|parameter name="query"><![CDATA[x]]>` | ❌ 解析不出 |
+
+DSML 那种最难缠：标签名前面夹着管道包裹的命名空间，`<` 后面直接跟 `|`，
+**按标签名匹配一个也命中不到**。而且实测输出还是畸形+截断的 ——
+闭合标签里带着下一个参数名（`</\|DSML\|parameter name="scope">`），
+最后一个调用断在 CDATA 中间（`<![CDATA[SEGFAULT</arg_value>`）。
+
+与其为每种记法各写一套解析，先 `_normalize_tool_markup()` 把 `<\|NS\|tag>`
+这层噪声抹掉（只动尖括号紧跟的管道段，正文里的普通竖线不受影响），
+它就退化成已经认识的 `<invoke name="x">` 形态。
+
+再用 `_parse_invoke_calls()` 解析，**不按标签配对**、只扫「`name="K"` 后面跟的第一个值」
+这个稳定模式 —— 开闭标签写乱了也不影响。切分以 invoke 锚点为界，
+所以末尾那个被截断的调用不影响前面已完整的。CDATA 分「完整」与「被截断」两种匹配：
+前者允许内部含 `<`（CDATA 本来就是干这个的），后者取到下一个标签为止，
+否则会把尾随的 `</arg_value>` 当成值的一部分。
+
+实测你给的那段原文：**3 个调用全部救出**，`query` 分别是 `crash` / `signal` / `SEGFAULT`，
+前两个的 `scope=mod` 也在，截断项无残留标签，随后真实执行 `search_code(crash, mod)`
+命中 60 条。
 
 第三种最阴：工具名只作为**文本内容**出现，按标签名去匹配一个也命中不到，
 所以连我早期的泄漏检测都漏了，整块 XML 原样发给了用户。

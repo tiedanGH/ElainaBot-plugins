@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.8.0',
+    'version': '1.8.1',
     'license': 'MIT',
 }
 
@@ -180,6 +180,24 @@ _WRAPPER_TAGS = (
 )
 _leaked_re = None
 
+# 某些模型（实测 GLM 系）用 DSML 记法，标签名前面还夹一段管道包裹的命名空间：
+#   <|DSML|tool_calls> / <|DSML|invoke name="x"> / </|DSML|parameter>
+# 这样 `<` 后面直接跟的是 `|`，按标签名匹配一个也命中不到 —— 整块原样发给用户。
+# 与其为每种记法各写一套解析，不如先把这层噪声抹掉，让它退化成已经认识的形态。
+_NS_CLOSE = re.compile(r'<\s*/\s*\|[^|>]{0,24}\|\s*')
+_NS_OPEN = re.compile(r'<\s*\|[^|>]{0,24}\|\s*')
+
+
+def _normalize_tool_markup(text: str) -> str:
+    """抹掉 `<|NS|tag>` 这类命名空间前缀，统一成 `<tag>`。
+
+    只动尖括号紧跟的管道包裹段，不碰正文里的普通竖线（表格、或运算符等）。
+    """
+    body = str(text or '')
+    if '<' not in body or '|' not in body:
+        return body
+    return _NS_OPEN.sub('<', _NS_CLOSE.sub('</', body))
+
 
 def _leaked_pattern():
     """懒构建泄漏检测正则。
@@ -210,6 +228,55 @@ _ARG_PAIR = re.compile(
 )
 _TAG_STRIP = re.compile(r'<[^>]*>')
 
+# invoke / parameter 记法（归一化之后）：
+#   <invoke name="search_code"><parameter name="query"><![CDATA[crash]]></parameter>
+# 实测这类输出经常是**畸形**的：闭合标签里带着下一个参数名
+# （</parameter name="scope">），最后一个调用还可能被截断在 CDATA 中间。
+# 所以不按标签配对解析，只扫「name="K" 后面跟的第一个值」这个稳定模式 ——
+# 开标签闭标签写乱了也不影响。
+_INVOKE_ANCHOR = re.compile(
+    r'<\s*(?:invoke|function_call|tool_call)\b[^>]*?name\s*=\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+_PARAM_PAIR = re.compile(
+    r'name\s*=\s*["\']([^"\']+)["\']\s*>?\s*'
+    r'(?:'
+    # ① 完整 CDATA：优先，且内部允许出现 `<`（CDATA 的意义就在这）
+    r'<!\[CDATA\[(.*?)\]\]>'
+    # ② 被截断的 CDATA（没有 `]]>`）：取到下一个标签为止，
+    #    否则会把尾随的 `</arg_value>` 之类当成值的一部分
+    r'|<!\[CDATA\[([^<]*)'
+    # ③ 没用 CDATA 的裸值
+    r'|([^<]*)'
+    r')',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _parse_invoke_calls(text: str) -> list:
+    """解析 invoke/parameter 记法，容忍畸形与截断。
+
+    切分方式：以每个 invoke 锚点为界，锚点之后到下一个锚点之前的文本就是它的
+    参数区。这样即便闭合标签全乱、末尾被截断，前面已经完整的调用依然能救出来 ——
+    模型的检索意图是对的，没必要因为它把标签写坏就作废整轮。
+    """
+    anchors = list(_INVOKE_ANCHOR.finditer(text))
+    calls = []
+    for index, anchor in enumerate(anchors):
+        name = anchor.group(1).strip()
+        if name not in tools.TOOL_NAMES:
+            continue
+        end = anchors[index + 1].start() if index + 1 < len(anchors) else len(text)
+        arguments = {}
+        for key, whole, cut, plain in _PARAM_PAIR.findall(text[anchor.end():end]):
+            key = key.strip()
+            if key and key not in arguments:
+                arguments[key] = _coerce(whole or cut or plain)
+        calls.append((name, arguments))
+        if len(calls) >= 8:
+            break
+    return calls
+
 
 def _coerce(value: str):
     """XML 里所有参数都是字符串，把 true/false 还原成 bool。
@@ -227,15 +294,19 @@ def _coerce(value: str):
 def _parse_leaked_tool_calls(answer: str) -> list:
     """从答案文本里把「写成了 XML 却没被执行」的工具调用解析出来。
 
-    支持实测见过的两种写法：
+    支持实测见过的三种写法（都先过一遍 _normalize_tool_markup 抹掉命名空间前缀）：
       <tool_call>list_games</tool_call>                     ← 裸工具名
-      <tool_call><tool_name>x</tool_name><arg_key>…         ← 带参数
+      <tool_call><tool_name>x</tool_name><arg_key>…         ← 键值标签
+      <invoke name="x"><parameter name="k"><![CDATA[v]]>    ← invoke 记法（含 DSML）
 
     只接受 TOOL_NAMES 里的工具名，最多 8 个 —— 与中央模块的上限一致，
     也避免模型一口气刷出几十个调用。
     """
-    calls = []
-    for block in _TOOL_CALL_BLOCK.findall(str(answer or '')):
+    text = _normalize_tool_markup(answer)
+    calls = _parse_invoke_calls(text)
+    if calls:
+        return calls
+    for block in _TOOL_CALL_BLOCK.findall(text):
         named = _TOOL_NAME_TAG.search(block)
         if named:
             name = named.group(1).strip()
@@ -272,7 +343,9 @@ def _leaked_tool_xml(answer: str) -> bool:
     而且中央层还记为 success。这种文本绝不能发给用户 —— 既难看，又意味着
     这一轮压根没检索过任何代码，答案毫无依据。
     """
-    return bool(_leaked_pattern().search(str(answer or '')))
+    # 先归一化：DSML 之类的 `<|NS|tag>` 记法不抹掉的话，`<` 后面跟的是 `|`，
+    # 按标签名一个也匹配不到，整块会被当成正常答案发出去。
+    return bool(_leaked_pattern().search(_normalize_tool_markup(answer)))
 
 
 # 真正把内容读进上下文的工具。list_games / list_dir 只给出目录清单，
