@@ -481,6 +481,26 @@ DSML 那种最难缠：标签名前面夹着管道包裹的命名空间，`<` �
 | 体积行数上限 | 超限文件跳过，读取按行窗口截断 |
 | 无正则搜索 | `search_code` 只做子串匹配，杜绝模型生成的病态正则 ReDoS |
 
+默认的可检索范围：
+
+| id | 路径 | 内容 | 默认 |
+|---|---|---|---|
+| `games` | `lgtbot/games` | 全部游戏源码 | ✅ |
+| `bot_core` | `lgtbot/bot_core` | 引擎核心 | ✅ |
+| `game_framework` | `lgtbot/game_framework` | 游戏框架 | ✅ |
+| `utility` | `lgtbot/utility` | 通用工具 | ✅ |
+| `lgtbot_readme` | `lgtbot/README.md` | **上游 LGTBot 仓库的 README** | ✅ |
+| `bridge` | `mod` | 桥接层 Python | ✅ |
+| `readme` | `README.md` | 适配层 README | ✅ |
+| `deploy` | `DEPLOY.md` | 部署文档 | ❌ |
+
+上游 README 讲的是引擎定位、游戏总览、玩法约定，回答「LGTBot 是什么」「有哪些游戏类型」
+这类问题比适配层 README 更权威（适配层只讲怎么接到 QQ 框架）。
+
+`lgtbot/` 是 git submodule。**没有完整 checkout 时该文件不存在**，沙箱会静默跳过，
+面板把它列为「目录不存在」，其余范围照常工作。服务器上执行
+`git submodule update --init --recursive lgtbot` 即可。
+
 LGTBot 自己的 `data/`（`config.yaml`、`lgtbot.db`、`user_cache.db`）**不在任何范围内**，
 因此天然不可达。这是刻意设计 —— 不要把它加进「可检索范围」。
 

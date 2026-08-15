@@ -22,8 +22,9 @@ DEFAULT_ROOTS = [
     {'id': 'bot_core', 'label': '引擎核心', 'path': 'lgtbot/bot_core', 'enabled': True},
     {'id': 'game_framework', 'label': '游戏框架', 'path': 'lgtbot/game_framework', 'enabled': True},
     {'id': 'utility', 'label': '通用工具', 'path': 'lgtbot/utility', 'enabled': True},
+    {'id': 'lgtbot_readme', 'label': 'LGTBot 上游 README', 'path': 'lgtbot/README.md', 'enabled': True},
     {'id': 'bridge', 'label': '桥接层 Python', 'path': 'mod', 'enabled': True},
-    {'id': 'readme', 'label': 'README', 'path': 'README.md', 'enabled': True},
+    {'id': 'readme', 'label': '适配层 README', 'path': 'README.md', 'enabled': True},
     # 部署文档跟玩家问题无关，默认关掉少一份噪声（需要时面板勾上即可）
     {'id': 'deploy', 'label': 'DEPLOY', 'path': 'DEPLOY.md', 'enabled': False},
 ]
