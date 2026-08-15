@@ -135,6 +135,12 @@ DEFAULT_CONFIG = {
     # 单次模型调用的超时。没有超时的话，一个卡住的请求会一直占着并发槽，
     # 后面所有人都被挡在门外 —— 单个请求慢会变成整个功能不可用。
     'request_timeout_seconds': 90,
+
+    # 瞬时故障（524 / 429 / 网关超时 / 空响应…）的重试次数与线性退避基数。
+    # 一次问答常已跑了十几个工具，不该被一次网关抖动全部作废。
+    # 永久性错误（413 超长、鉴权失败）不重试 —— 重试多少次都是同样结果。
+    'retry_attempts': 3,
+    'retry_delay_seconds': 2,
     'cooldown_reply': '问得太快啦，{seconds} 秒后再来。',
     'daily_limit_reply': '你今天已经问满 {limit} 次啦，明天再来吧。',
 
@@ -287,6 +293,8 @@ _INT_FIELDS = {
     'error_detail_chars': (40, 1000),
     'max_concurrent': (0, 64),
     'request_timeout_seconds': (0, 600),
+    'retry_attempts': (1, 6),
+    'retry_delay_seconds': (0, 30),
     'input_budget_chars': (2000, 400000),
     'game_source_max_chars': (2000, 400000),
     'search_max_matches': (5, 300),

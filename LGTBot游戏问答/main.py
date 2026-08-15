@@ -37,7 +37,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.7.4',
+    'version': '1.8.0',
     'license': 'MIT',
 }
 
@@ -672,6 +672,40 @@ def _with_disclaimer(answer: str, current: dict) -> str:
     return f'{text}\n\n{note}'
 
 
+async def _resumable(
+    make_call, current: dict, payload: list, system_prompt: str,
+    transcript: list, used_tools: set, budget: int, scope: str,
+):
+    """带工具的模型调用，失败时**从已检索到的结果续答**，而不是整轮作废。
+
+    一次问答常常已经跑了十几个工具（读规则、读源码、搜标识符…），中途一次
+    524 / 空响应就把这些全丢掉太亏 —— 而且用户还白等了几十秒。
+
+    两层保护：
+      · central._bounded 已经对**瞬时**故障做了退避重试（524 / 429 / 超时 /
+        空消息…），大多数抖动在那一层就消化掉了
+      · 重试用尽仍失败时，只要**已经读到过源码**，就改用无工具合成：把
+        transcript 交给模型直接写答案。这一轮不带工具、上下文也小得多，
+        成功率明显更高，检索成果也保住了
+
+    只有「一次源码都没读到」或「错误是超长这类重试无用的硬失败」才真的上抛。
+    """
+    try:
+        return await make_call()
+    except Exception as error:
+        if _context_overflow(error) or not (used_tools & _CONTENT_TOOLS) or not transcript:
+            raise
+        log.warning(
+            f'模型调用失败（{str(error)[:120]}），但已检索到 {len(transcript)} 份结果，'
+            f'改用无工具合成续答'
+        )
+        await _bump('resumed')
+        return await central.synthesize(
+            current, payload, system_prompt,
+            _transcript_text(transcript, budget), scope,
+        )
+
+
 async def _answer(event, question: str) -> None:
     current = config.load()
     if not central.available():
@@ -753,11 +787,17 @@ async def _answer(event, question: str) -> None:
         # 第一轮带工具正常检索；不合格时分两条路补救，两条都失败才报错 ——
         # 编造的规则比「查询失败」危害大得多。
         for attempt in (1, 2):
+            synthesizing = False
             if attempt == 1:
-                result = await central.ask(
-                    current, payload, system_prompt, tool_handler, scope,
+                result = await _resumable(
+                    lambda: central.ask(
+                        current, payload, system_prompt, tool_handler, scope,
+                    ),
+                    current, payload, system_prompt, transcript, used_tools,
+                    budget, scope,
                 )
             elif used_tools & _CONTENT_TOOLS:
+                synthesizing = True
                 # 注意条件是「调用过**内容**工具」，不是「transcript 非空」——
                 # list_games / list_dir 只给目录清单，拿它去合成只会得出「没有查到」。
                 # 实测踩过：模型只调了 list_games 就作答，被闸拦下后我却拿这份清单
@@ -775,12 +815,17 @@ async def _answer(event, question: str) -> None:
                 await _bump('regenerations')
                 used_tools.clear()
                 seen_paths.clear()
-                result = await central.ask(
-                    current, payload,
+                corrected = (
                     f'{system_prompt}\n\n'
                     + (central.CORRECTION_PROMPT if _leaked_tool_xml(answer)
-                       else central.UNGROUNDED_PROMPT),
-                    tool_handler, scope,
+                       else central.UNGROUNDED_PROMPT)
+                )
+                result = await _resumable(
+                    lambda: central.ask(
+                        current, payload, corrected, tool_handler, scope,
+                    ),
+                    current, payload, system_prompt, transcript, used_tools,
+                    budget, scope,
                 )
             answer = str(result.get('text') or '').strip()
             if not answer:

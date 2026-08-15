@@ -14,26 +14,80 @@ from __future__ import annotations
 import asyncio
 import json
 
+from core.base.logger import PLUGIN, get_logger
+
 from . import safety
 from .config import DEFAULT_SAFETY_REVIEW_PROMPT
 
 CONSUMER = 'lgtbot_qa'
+log = get_logger(PLUGIN, 'LGTBot游戏问答')
 
 
-async def _bounded(coro, current: dict, label: str):
-    """给每次模型调用套总超时。
+# 值得重试的**瞬时**故障：网关抖动、限流、超时、空响应。
+# 这类错误换个时刻再打一次就可能成功，而一次问答往往已经跑了十几个工具调用，
+# 因为一次 524 把全部检索结果作废太亏。
+_TRANSIENT_MARKERS = (
+    '524', '502', '503', '504', '429', '500',
+    'bad gateway', 'gateway time-out', 'gateway timeout', 'service unavailable',
+    'too many requests', 'rate limit', 'overload', 'temporarily',
+    'timeout', 'timed out', '超时',
+    'connection', 'reset by peer', 'broken pipe', 'eof occurred',
+    '接口返回了空消息', '接口返回中没有',
+)
 
-    没有超时的话，一个卡住的请求会一直占着并发槽（默认只有 2 个），
-    后面所有人都被挡在门外 —— 单个请求慢，变成整个功能不可用。
-    超时按失败处理，走既有的报错路径，槽位在 finally 里正常释放。
+# 明确**不该**重试的：重试多少次都是同样的结果，只会白烧时间和额度。
+# 放在瞬时判断之前，避免 413 里的数字或 auth 报文里的词被误判成瞬时。
+_PERMANENT_MARKERS = (
+    '413', 'context_length_exceeded', '超最大字符限制', '超过最大长度',
+    '401', '403', 'invalid api key', 'unauthorized', 'permission',
+    '没有可用的 ai 接口', 'ai llm 服务未启用',
+)
+
+
+def is_transient(error) -> bool:
+    """这个错误值不值得重试。"""
+    text = str(error or '').casefold()
+    if any(marker in text for marker in _PERMANENT_MARKERS):
+        return False
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+async def _bounded(make_coro, current: dict, label: str):
+    """调用模型：套超时 + 瞬时故障自动重试。
+
+    ``make_coro`` 必须是**每次现造协程**的工厂 —— 协程不能 await 两次，
+    传现成的协程对象重试时会直接 RuntimeError。
+
+    超时的意义：卡住的请求会一直占着并发槽（默认只有 2 个），后面所有人都被
+    挡在门外，单个请求慢会变成整个功能不可用。
+    重试的意义：一次问答常常已经跑了十几个工具，不该被一次网关抖动全部作废。
+    退避是线性的（delay × 第几次），够应付网关抖动，又不会把并发槽占太久。
     """
     timeout = float(current.get('request_timeout_seconds') or 90)
-    if timeout <= 0:
-        return await coro
-    try:
-        return await asyncio.wait_for(coro, timeout=timeout)
-    except asyncio.TimeoutError as error:
-        raise RuntimeError(f'{label}超时（{timeout:.0f} 秒未返回）') from error
+    tries = max(1, int(current.get('retry_attempts') or 3))
+    delay = max(0.0, float(current.get('retry_delay_seconds') or 2))
+    last_error: Exception | None = None
+    for attempt in range(1, tries + 1):
+        try:
+            coro = make_coro()
+            if timeout <= 0:
+                return await coro
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except asyncio.TimeoutError as error:
+            last_error = RuntimeError(f'{label}超时（{timeout:.0f} 秒未返回）')
+            last_error.__cause__ = error
+        except Exception as error:  # noqa: BLE001 — 分类后决定重试还是上抛
+            if not is_transient(error):
+                raise
+            last_error = error
+        if attempt < tries:
+            log.warning(
+                f'{label}第 {attempt}/{tries} 次失败（{str(last_error)[:120]}），'
+                f'{delay * attempt:.0f} 秒后重试'
+            )
+            if delay:
+                await asyncio.sleep(delay * attempt)
+    raise last_error if last_error else RuntimeError(f'{label}失败')
 
 
 def _raw_service():
@@ -259,7 +313,7 @@ async def _moderate(current: dict, text: str, source: str) -> dict:
         '不得因为内容是引用、历史介绍、玩笑、纠错或中立讨论而放行。'
     )
     try:
-        result = await _bounded(service.complete(
+        result = await _bounded(lambda: service.complete(
             [{'role': 'user', 'content': json.dumps(
                 {'source': source, 'content': str(text or '')}, ensure_ascii=False,
             )}],
@@ -322,7 +376,7 @@ async def synthesize(
         str(current.get('provider_id') or ''), str(current.get('model_preference') or ''),
     )
     payload = [*messages, {'role': 'user', 'content': f'{SYNTHESIS_PROMPT}\n\n{transcript}'}]
-    return await _bounded(service.complete(
+    return await _bounded(lambda: service.complete(
         messages=payload,
         system_prompt=system_prompt,
         provider_id=provider_id,
@@ -349,7 +403,7 @@ async def ask(
     provider_id, model = resolve_selection(
         str(current.get('provider_id') or ''), str(current.get('model_preference') or ''),
     )
-    return await _bounded(service.complete(
+    return await _bounded(lambda: service.complete(
         messages=messages,
         system_prompt=system_prompt,
         provider_id=provider_id,

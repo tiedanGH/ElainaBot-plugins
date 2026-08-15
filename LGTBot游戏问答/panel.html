@@ -115,6 +115,8 @@ td code{font-size:11px;color:var(--text3)}
       <div><label>每日上限（次 / 人，0=不限）</label><input type="number" id="daily_limit"></div>
       <div><label>全局并发上限（0=不限）</label><input type="number" id="max_concurrent"></div>
       <div><label>单次模型调用超时（秒）</label><input type="number" id="request_timeout_seconds"></div>
+      <div><label>瞬时故障重试次数</label><input type="number" id="retry_attempts"></div>
+      <div><label>重试退避基数（秒）</label><input type="number" id="retry_delay_seconds"></div>
       <div><label>回答字数上限</label><input type="number" id="answer_max_chars"></div>
       <div><label>输入预算（字符 / 轮）</label><input type="number" id="input_budget_chars"></div>
       <div><label>整包读取上限（字符）</label><input type="number" id="game_source_max_chars"></div>
@@ -205,6 +207,7 @@ const BOOLS = ['enabled','group_enabled','direct_enabled','owner_unlimited',
 const NUMS = ['priority','temperature','max_tokens','max_tool_rounds','context_messages',
   'context_expire_seconds','cooldown_seconds','daily_limit','answer_max_chars',
   'input_budget_chars','game_source_max_chars','search_max_matches','read_max_lines',
+  'retry_attempts','retry_delay_seconds',
   'file_max_bytes','error_detail_chars','max_concurrent','request_timeout_seconds'];
 const TEXTS = ['prefix','lgtbot_dir','system_prompt','extra_prompt','cooldown_reply',
   'daily_limit_reply','busy_reply','trigger_mode','disclaimer',
@@ -319,7 +322,7 @@ async function loadStats() {
       ['questions_total', '累计提问'], ['answers_total', '累计成功'],
       ['failures_total', '累计失败'], ['tool_calls_total', '累计工具调用'],
       ['regenerations_total', '接地重试'], ['synthesized_total', '合成兜底'],
-      ['overflows_total', '超长失败'], ['recovered_calls_total', '代为执行'],
+      ['overflows_total', '超长失败'], ['recovered_calls_total', '代为执行'], ['resumed_total', '断点续答'],
       ['busy_global_total', '并发拒绝'], ['active_now', '正在处理'],
       ['ungrounded_total', '拦下的臆造'],
       ['blocked_input_total', '拦下的输入'], ['blocked_output_total', '拦下的输出'],
