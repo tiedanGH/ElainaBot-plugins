@@ -151,10 +151,10 @@ async def _delete_records(request: web.Request) -> web.Response:
 async def _test_draw(request: web.Request) -> web.Response:
     """在面板中试跑一次生图，结果同样写入历史记录。"""
     body = await _body(request)
-    prompt = str(body.get('prompt') or '').strip()[:1000]
+    current = config.load()
+    prompt = str(body.get('prompt') or '').strip()[:current['input_max_length']]
     if not prompt:
         return web.json_response({'success': False, 'error': '请填写画面描述'}, status=400)
-    current = config.load()
     record = {
         'created_at': time.time(), 'source': 'panel', 'status': 'failed',
         'user_id': 'panel', 'username': 'Web 面板', 'chat_type': 'panel',

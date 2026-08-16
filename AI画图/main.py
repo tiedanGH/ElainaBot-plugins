@@ -16,7 +16,7 @@ __plugin_meta__ = {
     'name': 'AI 画图',
     'author': '铁蛋',
     'description': '所有人可用的「画图 XXX」指令，调用中央 AI LLM 生图，并提供配置与历史记录面板',
-    'version': '1.0.1',
+    'version': '1.0.2',
     'license': 'MIT',
 }
 
@@ -32,7 +32,6 @@ MESSAGE_EVENTS = [
     'AT_MESSAGE_CREATE',
     'MESSAGE_CREATE',
 ]
-MAX_INPUT_LENGTH = 1000
 
 _ICON = (
     '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" '
@@ -244,7 +243,7 @@ async def draw_help(event, _match) -> None:
     await _reply_text(
         event,
         '【AI 画图】\n'
-        '发送「画图 <画面描述>」即可生成图片\n'
+        f"发送「画图 <画面描述>」即可生成图片（最多 {current['input_max_length']} 字）\n"
         '例：画图 雪山下的湖泊，黄昏，写实摄影\n'
         f"当前尺寸：{current['image_size']}\n"
         f"可用线路：{len(routes)} 条\n"
@@ -275,8 +274,9 @@ async def draw_command(event, match) -> None:
     prompt = str(match.group(1) or '').strip()
     if not prompt:
         return
-    if len(prompt) > MAX_INPUT_LENGTH:
-        await _reply_text(event, f'画面描述太长了，请控制在 {MAX_INPUT_LENGTH} 字以内。', current)
+    limit = current['input_max_length']
+    if len(prompt) > limit:
+        await _reply_text(event, _fill(current['input_too_long_response'], limit=limit), current)
         return
 
     record = _base_record(event, prompt)

@@ -55,6 +55,8 @@ DEFAULT_CONFIG = {
     'force_verify_image': True,
     'media_fallback': True,
     # 限流
+    'input_max_length': 1000,
+    'input_too_long_response': '画面描述太长了，请控制在 {limit} 字以内。',
     'user_cooldown_seconds': 30,
     'chat_cooldown_seconds': 5,
     'user_daily_limit': 20,
@@ -147,6 +149,11 @@ def _int_in(value, default: int, low: int, high: int) -> int:
     return min(high, max(low, number))
 
 
+def _text(value, default: str, limit: int) -> str:
+    """必填文案：先去空白再判空，纯空格也回落到默认，避免机器人发出空消息。"""
+    return (str(value or '').strip() or str(default))[:limit]
+
+
 def _text_list(value, label: str, limit: int, *, fold: bool = False) -> list[str]:
     items = value
     if isinstance(items, str):
@@ -186,9 +193,7 @@ def validate(value: dict) -> dict:
 
     value['prompt_provider_id'] = str(value.get('prompt_provider_id') or '').strip()[:128]
     value['prompt_model'] = str(value.get('prompt_model') or '').strip()[:256]
-    value['prompt_system'] = str(
-        value.get('prompt_system') or DEFAULT_PROMPT_SYSTEM
-    ).strip()[:12000]
+    value['prompt_system'] = _text(value.get('prompt_system'), DEFAULT_PROMPT_SYSTEM, 12000)
     value['prompt_prefix'] = str(value.get('prompt_prefix') or '').strip()[:2000]
     value['prompt_suffix'] = str(value.get('prompt_suffix') or '').strip()[:2000]
     value['prompt_max_length'] = _int_in(value.get('prompt_max_length'), 1200, 50, 4000)
@@ -198,33 +203,34 @@ def validate(value: dict) -> dict:
         temperature = 0.6
     value['prompt_temperature'] = min(2.0, max(0.0, temperature))
 
-    value['notice_text'] = str(
-        value.get('notice_text') or DEFAULT_CONFIG['notice_text']
-    ).strip()[:300]
+    value['notice_text'] = _text(value.get('notice_text'), DEFAULT_CONFIG['notice_text'], 300)
     value['caption_template'] = str(value.get('caption_template') or '').strip()[:300]
-    value['failure_message'] = str(
-        value.get('failure_message') or DEFAULT_CONFIG['failure_message']
-    ).strip()[:300]
+    value['failure_message'] = _text(
+        value.get('failure_message'), DEFAULT_CONFIG['failure_message'], 300,
+    )
     # Markdown 图片语法用 ] 收尾，alt 里出现方括号会破坏整条消息。
-    value['markdown_alt'] = str(
-        value.get('markdown_alt') or DEFAULT_CONFIG['markdown_alt']
-    ).strip().replace('[', '').replace(']', '')[:60] or DEFAULT_CONFIG['markdown_alt']
+    alt = str(value.get('markdown_alt') or '').replace('[', '').replace(']', '')
+    value['markdown_alt'] = _text(alt, DEFAULT_CONFIG['markdown_alt'], 60)
 
+    value['input_max_length'] = _int_in(value.get('input_max_length'), 1000, 10, 4000)
+    value['input_too_long_response'] = _text(
+        value.get('input_too_long_response'), DEFAULT_CONFIG['input_too_long_response'], 300,
+    )
     value['user_cooldown_seconds'] = _int_in(value.get('user_cooldown_seconds'), 30, 0, 86400)
     value['chat_cooldown_seconds'] = _int_in(value.get('chat_cooldown_seconds'), 5, 0, 86400)
     value['user_daily_limit'] = _int_in(value.get('user_daily_limit'), 20, 0, 100000)
     value['global_daily_limit'] = _int_in(value.get('global_daily_limit'), 200, 0, 1000000)
     value['max_concurrency'] = _int_in(value.get('max_concurrency'), 2, 1, 32)
-    limited = str(value.get('limited_response') or DEFAULT_CONFIG['limited_response']).strip()[:300]
+    limited = _text(value.get('limited_response'), DEFAULT_CONFIG['limited_response'], 300)
     value['limited_response'] = limited if '{detail}' in limited else limited + '（{detail}）'
 
-    value['moderation_prompt'] = str(
-        value.get('moderation_prompt') or DEFAULT_MODERATION_PROMPT
-    ).strip()[:12000]
+    value['moderation_prompt'] = _text(
+        value.get('moderation_prompt'), DEFAULT_MODERATION_PROMPT, 12000,
+    )
     value['blocked_words'] = _text_list(value.get('blocked_words', []), '违规词', 500)
-    value['blocked_response'] = str(
-        value.get('blocked_response') or DEFAULT_CONFIG['blocked_response']
-    ).strip()[:300]
+    value['blocked_response'] = _text(
+        value.get('blocked_response'), DEFAULT_CONFIG['blocked_response'], 300,
+    )
 
     value['history_limit'] = _int_in(value.get('history_limit'), 500, 20, 20000)
     value['history_image_limit'] = _int_in(value.get('history_image_limit'), 200, 0, 5000)
