@@ -191,16 +191,59 @@ async def complete(messages: list, system_prompt: str, cfg: dict) -> tuple:
     return {'text': text,
             'model': str((result or {}).get('model') or ''),
             'provider_id': str((result or {}).get('provider_id') or ''),
+            'provider_name': str((result or {}).get('provider_name') or ''),
             'run_id': str((result or {}).get('run_id') or '')}, _fail('', None, '')
 
 
-async def probe() -> dict:
-    """面板「测试连接」: 用一句最小请求验证中央链路可用。"""
+def _provider_name(provider_id: str) -> str:
+    if not provider_id:
+        return ''
+    item = next((p for p in _enabled_providers() if p.get('id') == provider_id), None)
+    return str((item or {}).get('name') or provider_id)
+
+
+async def probe(provider_id: str = '', model: str = '') -> dict:
+    """面板「测试连接」: 按**指定的**接口与模型跑一句最小请求。
+
+    ``provider_id`` / ``model`` 传面板当前选中的值 (可能还没保存), 两者都留空才
+    退回插件已保存的配置。返回里带上**实际应答**的接口与模型 —— 选择留空或已失效
+    时中央会自动挑选并故障切换, 不回报就会像「测的不是我选的那个」一样莫名其妙。
+    """
     info = status()
     if not info['ready']:
         return {'ok': False, 'error': info['message'], 'http_status': None}
-    result, fail = await complete([{'role': 'user', 'content': '回复 ok'}], '', {'temperature': 0})
+
+    want_provider = str(provider_id or '').strip()
+    want_model = str(model or '').strip()
+    if not want_provider and not want_model:
+        from . import config as plugin_config
+        saved = plugin_config.all_config()
+        want_provider = str(saved.get('provider_id') or '')
+        want_model = str(saved.get('model') or '')
+
+    use_provider, use_model = resolve_selection(want_provider, want_model)
+    # 选了却解析不出来 = 该接口/模型已被中央停用或删除, 必须明说,
+    # 否则会静默退回自动选择, 让人以为测的就是自己选的那个
+    stale = []
+    if want_provider and not use_provider:
+        stale.append(f'接口「{want_provider}」')
+    if want_model and not use_model:
+        stale.append(f'模型「{want_model}」')
+
+    result, fail = await complete([{'role': 'user', 'content': '回复 ok'}], '',
+                                  {'provider_id': use_provider, 'model': use_model,
+                                   'temperature': 0})
     if result is None:
-        return {'ok': False, 'error': fail['error'], 'http_status': fail['status']}
-    return {'ok': True, 'model': result['model'], 'provider_id': result['provider_id'],
-            'reply': result['text'][:100]}
+        return {'ok': False, 'error': fail['error'], 'http_status': fail['status'],
+                'stale': stale}
+    return {
+        'ok': True,
+        'model': result['model'],
+        'provider_id': result['provider_id'],
+        'provider_name': result['provider_name'] or _provider_name(result['provider_id']),
+        'reply': result['text'][:100],
+        'requested_model': want_model,
+        # 有任一项没定死就说明中央参与了自动选择, 面板据此明确提示
+        'auto_selected': not use_provider or not use_model,
+        'stale': stale,
+    }

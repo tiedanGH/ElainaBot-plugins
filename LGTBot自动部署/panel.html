@@ -411,11 +411,17 @@ async function loadModels(){
 }
 async function testConn(){
   const btn=$('btn-test');setBusy(btn,true);
-  const r=await api('/test','POST',{});
+  /* 送当前下拉里的选择（可能还没保存），保证测的就是眼前选的那个 */
+  const r=await api('/test','POST',{provider_id:$('provider_id').value,model:$('model').value});
   setBusy(btn,false,'测试连接');
-  show($('test-result'),r.success,r.success
-    ?`✅ 中央 AI LLM 可用，模型 <code>${esc(r.model||'')}</code>，返回：${esc(r.reply||'')}`
-    :'❌ 中央 AI LLM 不可用: '+esc(r.error||''));
+  const stale=(r.stale||[]).length?'⚠️ '+esc((r.stale||[]).join('、'))+' 在中央模块里已停用或不存在':'';
+  if(!r.success)
+    return show($('test-result'),false,'❌ 中央 AI LLM 不可用: '+esc(r.error||'')+(stale?'<br>'+stale:''));
+  const who=r.provider_name?esc(r.provider_name)+' / ':'';
+  let msg=`✅ 实际应答：${who}<code>${esc(r.model||'')}</code><br>返回：${esc(r.reply||'')}`;
+  if(stale)msg+='<br>'+stale+'，已改由中央自动选择';
+  else if(r.auto_selected)msg+='<br>ℹ️ 本次由中央按优先级自动选择（接口或模型留了「自动选择」）';
+  show($('test-result'),true,msg);
 }
 
 /* ==================== 审核记录 ==================== */

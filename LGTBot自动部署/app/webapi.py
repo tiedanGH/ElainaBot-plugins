@@ -57,8 +57,14 @@ async def _set_config(request: web.Request):
 
 
 async def _test_connection(request: web.Request):
-    """用一句最小请求验证中央 AI LLM 链路是否可用。"""
-    result = await central.probe()
+    """用一句最小请求验证中央 AI LLM 链路是否可用。
+
+    面板会把**当前选中**的接口/模型一起提交 (可能还没保存), 这样点「测试连接」
+    测的就是眼前选的那个, 而不是已保存的、更不是中央自动挑的。
+    """
+    body = await _json(request)
+    result = await central.probe(str(body.get('provider_id') or ''),
+                                 str(body.get('model') or ''))
     return web.json_response({'success': result.get('ok', False), **result})
 
 
