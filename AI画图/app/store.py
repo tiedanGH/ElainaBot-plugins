@@ -224,6 +224,27 @@ def _prune_images(image_limit: int) -> None:
     _remove_files(row['image_file'] for row in rows)
 
 
+def image_usage() -> dict:
+    """统计 data/images 的实际占用；按目录实测，包含未被记录引用的残留文件。"""
+    if not _image_dir or not os.path.isdir(_image_dir):
+        return {'files': 0, 'bytes': 0}
+    files = 0
+    total = 0
+    try:
+        with os.scandir(_image_dir) as entries:
+            for entry in entries:
+                try:
+                    if not entry.is_file():
+                        continue
+                    total += entry.stat().st_size
+                except OSError:
+                    continue
+                files += 1
+    except OSError:
+        return {'files': 0, 'bytes': 0}
+    return {'files': files, 'bytes': total}
+
+
 def get(record_id: int) -> dict | None:
     with _lock:
         row = _conn().execute(
@@ -301,6 +322,10 @@ def stats(day_start: float) -> dict:
         images = _conn().execute(
             "SELECT COUNT(*) FROM records WHERE image_file<>''"
         ).fetchone()[0]
+        gallery = _conn().execute(
+            "SELECT COUNT(*) FROM records WHERE image_file<>'' OR hosted_url<>'' OR image_url<>''"
+        ).fetchone()[0]
+    usage = image_usage()
     return {
         'total': int(row['total'] or 0),
         'success': int(row['success'] or 0),
@@ -309,6 +334,9 @@ def stats(day_start: float) -> dict:
         'users': int(row['users'] or 0),
         'today': int(today or 0),
         'stored_images': int(images or 0),
+        'gallery_total': int(gallery or 0),
+        'image_files': usage['files'],
+        'image_bytes': usage['bytes'],
         'average_ms': round(float(average or 0)),
     }
 
