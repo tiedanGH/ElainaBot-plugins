@@ -11,7 +11,7 @@ from aiohttp import web
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.web_pages import register_route
 
-from . import central, config, hosting, limiter, media, store
+from . import capability, central, config, hosting, limiter, media, store
 
 log = get_logger(PLUGIN, 'AI画图')
 
@@ -50,6 +50,7 @@ def _with_central(value: dict) -> dict:
     value['valid_routes'] = len(central.valid_routes(value))
     value['image_sizes'] = list(config.IMAGE_SIZES)
     value['hosting'] = hosting.state()
+    value['capability'] = capability.state()
     return value
 
 
@@ -85,6 +86,7 @@ async def _stats(_request: web.Request) -> web.Response:
         'enabled': current['enabled'],
         'shared_ai_status': central.status(),
         'hosting': hosting.state(),
+        'capability': capability.state(),
     })
     return web.json_response({'success': True, 'data': data})
 

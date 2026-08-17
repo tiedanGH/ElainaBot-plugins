@@ -60,6 +60,9 @@ DEFAULT_CONFIG = {
     'markdown_alt': 'AI画图',
     'force_verify_image': True,
     'media_fallback': True,
+    # 对外能力：把画图注册到中央 AI LLM 供其他插件调用
+    'capability_enabled': True,
+    'capability_daily_limit': 50,
     # 限流
     'input_max_length': 1000,
     'input_too_long_response': '画面描述太长了，请控制在 {limit} 字以内。',
@@ -222,6 +225,7 @@ def validate(value: dict) -> dict:
     alt = str(value.get('markdown_alt') or '').replace('[', '').replace(']', '')
     value['markdown_alt'] = _text(alt, DEFAULT_CONFIG['markdown_alt'], 60)
 
+    value['capability_daily_limit'] = _int_in(value.get('capability_daily_limit'), 50, 0, 100000)
     value['input_max_length'] = _int_in(value.get('input_max_length'), 1000, 10, 4000)
     value['input_too_long_response'] = _text(
         value.get('input_too_long_response'), DEFAULT_CONFIG['input_too_long_response'], 300,
@@ -246,7 +250,7 @@ def validate(value: dict) -> dict:
     value['history_image_limit'] = _int_in(value.get('history_image_limit'), 200, 0, 5000)
     for key in (
         'enabled', 'group_enabled', 'direct_enabled', 'channel_enabled',
-        'debug_direct_request',
+        'debug_direct_request', 'capability_enabled',
         'prompt_optimize_enabled', 'notice_enabled', 'mention_user',
         'markdown_send', 'force_verify_image', 'media_fallback',
         'owner_bypass_limits', 'moderation_enabled', 'moderation_fail_closed',

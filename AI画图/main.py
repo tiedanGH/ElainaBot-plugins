@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import time
 
@@ -10,13 +11,13 @@ from core.base.logger import PLUGIN, get_logger, report_error
 from core.plugin.decorators import handler, on_load, on_unload
 from core.plugin.web_pages import register_page, unregister_page
 
-from .app import central, config, hosting, limiter, media, store, webpanel
+from .app import capability, central, config, hosting, limiter, media, store, webpanel
 
 __plugin_meta__ = {
     'name': 'AI 画图',
     'author': '铁蛋',
     'description': '所有人可用的「画图 XXX」指令，调用中央 AI LLM 生图，并提供配置与历史记录面板',
-    'version': '1.4.1',
+    'version': '1.5.0',
     'license': 'MIT',
 }
 
@@ -24,6 +25,7 @@ log = get_logger(PLUGIN, 'AI画图')
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 PAGE_KEY = 'ai-draw'
+_capability_task: asyncio.Task | None = None
 MESSAGE_EVENTS = [
     'GROUP_AT_MESSAGE_CREATE',
     'GROUP_MESSAGE_CREATE',
@@ -55,14 +57,34 @@ async def initialize() -> None:
         icon=_ICON,
         html_file=os.path.join(BASE_DIR, 'panel.html'),
     )
+    global _capability_task
+    if _capability_task is None or _capability_task.done():
+        _capability_task = asyncio.create_task(_watch_capability())
     log.info('AI 画图插件已加载')
 
 
 @on_unload
 async def cleanup() -> None:
+    global _capability_task
+    if _capability_task is not None:
+        _capability_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _capability_task
+        _capability_task = None
+    capability.unregister()
     unregister_page(PAGE_KEY)
     limiter.reset()
     await asyncio.to_thread(store.close)
+
+
+async def _watch_capability() -> None:
+    """中央模块重载会清空在线能力，这里按开关持续补注册。"""
+    while True:
+        try:
+            capability.sync(config.load().get('capability_enabled', False))
+        except Exception:  # noqa: BLE001 - 看护任务不能被单次失败带崩
+            log.debug('画图能力注册重试失败', exc_info=True)
+        await asyncio.sleep(5)
 
 
 def _is_owner(event) -> bool:
