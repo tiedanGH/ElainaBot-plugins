@@ -38,7 +38,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.9.4',
+    'version': '1.10.0',
     'license': 'MIT',
 }
 
@@ -1274,7 +1274,7 @@ async def help_command(event, _match) -> None:
         '【LGTBot 游戏问答】\n'
         f'{trigger}\n'
         '我会现场检索游戏源码后回答，规则、玩法、计分结算、成就都能问。\n'
-        '/问答 清空 - 清空你的追问上下文\n'
+        '/清空上下文 - 清空你自己的追问记录（也可用 /问答 清空）\n'
         '/问答 游戏 - 查看收录的游戏数量\n'
         f'已收录 {len(catalog)} 个游戏\n'
         f'今日剩余次数上限：{current.get("daily_limit")} 次/人'
@@ -1282,7 +1282,11 @@ async def help_command(event, _match) -> None:
 
 
 @handler(
-    r'^/(?:问答|lgtqa)\s+(?:clear|清空)$',
+    # 两种写法都认：`/问答 清空`（原来就有）与独立的 `/清空上下文`。
+    # 群友记不住二级子命令，而这个动作又最常用 —— 上下文串了味就想立刻重来。
+    # 不做成裸 `/清空`：那个词太通用，同 bot 上别的插件很可能也想要。
+    r'^/(?:问答|lgtqa)\s+(?:clear|reset|清空|清除|重置)(?:上下文|对话|记录)?$'
+    r'|^/(?:清空|清除|重置)(?:上下文|对话|记录)$',
     name='清空 LGTBot 问答上下文',
     desc='清空当前用户的问答上下文',
     priority=PRIORITY + 10,
@@ -1291,8 +1295,12 @@ async def help_command(event, _match) -> None:
     block=True,
 )
 async def clear_command(event, _match) -> None:
+    """只清**自己**的。全体重置在面板上，不开放给群友。"""
     deleted = await asyncio.to_thread(store.clear, _scope(event))
-    await _reply(event, f'已清空你的问答上下文（{deleted} 条）。')
+    if not deleted:
+        await _reply(event, '你本来就没有正在进行的追问上下文。')
+        return
+    await _reply(event, f'已清空你的问答上下文（{deleted} 条），下次提问会重新开始。')
 
 
 @handler(

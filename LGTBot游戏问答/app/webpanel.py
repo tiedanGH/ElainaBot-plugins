@@ -147,9 +147,16 @@ async def _probe(request: web.Request) -> web.Response:
 
 
 async def _clear_context(request: web.Request) -> web.Response:
+    """三种口径：指定 scope / 全部 / 只清过期。
+
+    「全部」要显式传 all=true，不能靠「没传 scope」来表示 —— 前端少传一个字段就
+    把所有人的上下文清了，这种误触代价太大。
+    """
     body = await _body(request)
     scope = str(body.get('scope') or '').strip()
-    if not scope:
+    if body.get('all'):
+        deleted = await asyncio.to_thread(store.clear_all)
+    elif not scope:
         current = config.load()
         deleted = await asyncio.to_thread(
             store.prune_expired, int(current.get('context_expire_seconds') or 3600),

@@ -181,6 +181,8 @@ td code{font-size:11px;color:var(--text3)}
     <button class="btn primary" id="save">保存配置</button>
     <button class="btn" id="reload">重新载入</button>
     <button class="btn" id="prune">清理过期上下文</button>
+    <button class="btn" id="reset-all">重置全部上下文</button>
+    <span class="hint" style="margin:0">「重置全部」会清掉<b>所有人</b>的追问记录，用量与统计不受影响。</span>
   </div>
 
   <div class="card" style="margin-top:16px">
@@ -392,6 +394,17 @@ $('prune').onclick = async () => {
     toast('已清理 ' + data.deleted + ' 条过期上下文');
     await loadStats();
   } catch (error) { toast(error.message, true); }
+};
+$('reset-all').onclick = async () => {
+  // 清了就找不回来，且影响的是所有人，先确认一次
+  if (!confirm('确定清空所有用户的追问上下文吗？此操作不可撤销。\n（用量、统计、已画图片缓存不受影响）')) return;
+  $('reset-all').disabled = true;
+  try {
+    const data = await call('DELETE', '/context', {all: true});
+    toast('已重置全部上下文，共清除 ' + data.deleted + ' 条');
+    await loadStats();
+  } catch (error) { toast(error.message, true); }
+  $('reset-all').disabled = false;
 };
 $('provider_id').onchange = renderModels;
 $('draw_enabled').onchange = renderDrawState;

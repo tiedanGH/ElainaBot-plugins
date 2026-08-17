@@ -147,6 +147,19 @@ def clear(scope: str) -> int:
         return cursor.rowcount
 
 
+def clear_all() -> int:
+    """清掉**所有人**的追问上下文。
+
+    只动 messages —— 用量、统计、已画图片缓存都不碰：那些是运营数据，
+    清上下文是「让大家重新开个头」，不该顺手把每日上限也重置了。
+    """
+    with _lock:
+        db = _db()
+        cursor = db.execute('DELETE FROM messages')
+        db.commit()
+        return cursor.rowcount
+
+
 def prune_expired(expire_seconds: int, draw_ttl: int = 86400) -> int:
     floor = int(time.time()) - max(60, int(expire_seconds))
     with _lock:
