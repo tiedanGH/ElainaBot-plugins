@@ -16,7 +16,7 @@ __plugin_meta__ = {
     'name': 'AI 画图',
     'author': '铁蛋',
     'description': '所有人可用的「画图 XXX」指令，调用中央 AI LLM 生图，并提供配置与历史记录面板',
-    'version': '1.2.0',
+    'version': '1.2.1',
     'license': 'MIT',
 }
 
@@ -99,6 +99,12 @@ def _mention(event, current: dict) -> str:
 async def _reply_text(event, text: str, current: dict | None = None) -> None:
     mention = _mention(event, current if current is not None else config.load())
     await event.reply(f'{mention} {text}'.strip() if mention else text)
+
+
+def _brief(text: str, limit: int = 60) -> str:
+    """日志用的描述摘要：压成单行并截断，避免长提示词刷屏。"""
+    value = ' '.join(str(text or '').split())
+    return value if len(value) <= limit else value[:limit] + '…'
 
 
 def _find_blocked(text: str, words: list[str]) -> str:
@@ -245,15 +251,23 @@ async def _generate_and_deliver(event, current: dict, prompt: str, final_prompt:
     notes: list[str] = []
     image = b''
     for index in range(attempts):
+        started = time.perf_counter()
+        log.info('开始生图 第 %s/%s 次 尺寸=%s 可用线路=%s',
+                 index + 1, attempts, current['image_size'], routes)
         try:
             async with limiter.semaphore(current['max_concurrency']):
                 result = await central.generate(current, final_prompt, exclude=tried)
         except Exception as error:  # noqa: BLE001 - 线路耗尽时保留前几次的失败原因
+            log.warning('生图请求失败 第 %s 次: %s', index + 1, error)
             if not notes:
                 raise
             notes.append(str(error)[:300])
             break
+        elapsed = round((time.perf_counter() - started) * 1000)
         tried.add((result['provider_id'], result['model']))
+        log.info('生图完成 线路=%s/%s 用时=%sms 返回=%s',
+                 result['provider'] or result['provider_id'], result['model'], elapsed,
+                 '图片数据' if result['data'] else (result['url'] or '空'))
         record.update({
             'status': 'success',
             'provider': result['provider'],
@@ -280,14 +294,19 @@ async def _generate_and_deliver(event, current: dict, prompt: str, final_prompt:
             'error': outcome['error'],
         })
         if outcome['delivered']:
+            log.info('图片已送达 方式=%s 线路=%s/%s%s',
+                     outcome['send_mode'], result['provider'] or result['provider_id'],
+                     result['model'], f'（第 {index + 1} 次尝试）' if notes else '')
             if notes:
                 record['error'] = '已改用备用线路；先前失败：' + '；'.join(notes)[:800]
             return image
         notes.append(f"{result['provider'] or result['provider_id']}/{result['model']}: "
                      f"{outcome['error']}")
         if not outcome['retryable'] or index + 1 >= attempts:
+            log.warning('画图未送达且不再重试（%s）: %s',
+                        '已达重试上限' if outcome['retryable'] else '换线路也无济于事', notes[-1])
             break
-        log.warning('AI 画图生成成功但未送达，切换下一条线路重试: %s', notes[-1])
+        log.warning('生成成功但未送达，改用下一条线路重试: %s', notes[-1])
     record['error'] = '；'.join(notes)[:1000]
     return image
 
@@ -348,9 +367,14 @@ async def draw_command(event, match) -> None:
         return
 
     record = _base_record(event, prompt)
+    log.info(
+        '收到画图请求 user=%s 场景=%s 描述=%s',
+        record['user_id'], record['chat_type'] or '未知', _brief(prompt),
+    )
     blocked = _find_blocked(prompt, current['blocked_words'])
     if blocked:
         record.update({'status': 'blocked', 'error': f'命中违规词：{blocked}'})
+        log.warning('画图描述命中违规词 user=%s 违规词=%s', record['user_id'], blocked)
         await _persist(record, current)
         await _reply_text(event, current['blocked_response'], current)
         return
@@ -362,12 +386,14 @@ async def draw_command(event, match) -> None:
     )
     if reason:
         # 限流只是拦下重复请求，不构成一次画图，不写入运行日志。
+        log.info('画图请求被限流 user=%s 原因=%s', record['user_id'], reason)
         await _reply_text(event, _fill(current['limited_response'], detail=reason), current)
         return
 
     if not central.available():
         limiter.release(record['appid'], record['user_id'], record['chat_id'])
         record.update({'status': 'failed', 'error': central.status()['message']})
+        log.warning('中央 AI LLM 不可用，画图请求已放弃: %s', central.status()['message'])
         await _persist(record, current)
         await _reply_text(event, central.status()['message'], current)
         return
@@ -384,6 +410,10 @@ async def draw_command(event, match) -> None:
             'error': review.get('error') or 'AI 内容审核判定为违规',
             'duration_ms': round((time.perf_counter() - started) * 1000),
         })
+        log.warning(
+            '画图描述未通过内容审核 user=%s 原因=%s',
+            record['user_id'], review.get('error') or '判定为违规',
+        )
         await _persist(record, current)
         await _reply_text(event, current['blocked_response'], current)
         return
@@ -395,6 +425,8 @@ async def draw_command(event, match) -> None:
         optimized = await central.optimize_prompt(current, prompt)
         final_prompt = central.build_prompt(current, optimized)
         record['final_prompt'] = final_prompt
+        if current['prompt_optimize_enabled']:
+            log.debug('提示词已改写 user=%s -> %s', record['user_id'], _brief(final_prompt, 120))
         image = await _generate_and_deliver(event, current, prompt, final_prompt, record)
     except Exception as error:  # noqa: BLE001 - 统一记录并回复友好文案
         record.update({
@@ -408,5 +440,7 @@ async def draw_command(event, match) -> None:
     record['duration_ms'] = round((time.perf_counter() - started) * 1000)
     await _persist(record, current, image if current['history_save_images'] else b'')
     if not record.get('delivered'):
-        log.warning('AI 画图发送失败: %s', record.get('error', ''))
+        # 具体原因上面已经逐条打过，这里只补一句结论。
+        log.warning('画图请求结束但未出图 user=%s 总耗时=%sms',
+                    record['user_id'], record['duration_ms'])
         await _reply_text(event, current['failure_message'], current)

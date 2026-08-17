@@ -8,9 +8,12 @@ import time
 
 from aiohttp import web
 
+from core.base.logger import PLUGIN, get_logger
 from core.plugin.web_pages import register_route
 
 from . import central, config, hosting, limiter, media, store
+
+log = get_logger(PLUGIN, 'AI画图')
 
 PREFIX = '/api/ext/ai-draw'
 _INLINE_PREVIEW_BYTES = 8 * 1024 * 1024
@@ -169,6 +172,8 @@ async def _try_route(current: dict, prompt: str, route: dict, routes: list[dict]
     except Exception as error:  # noqa: BLE001 - 面板要看到每条线路的真实报错
         step['ms'] = round((time.perf_counter() - started) * 1000)
         step['error'] = str(error)[:1500]
+        log.warning('面板试跑线路失败 %s/%s 用时=%sms: %s',
+                    step['provider'], step['model'], step['ms'], error)
         return None, b'', step
     image = result['data'] or (await media.download(result['url']) or b'')
     step['ms'] = round((time.perf_counter() - started) * 1000)
@@ -177,7 +182,10 @@ async def _try_route(current: dict, prompt: str, route: dict, routes: list[dict]
         return None, b'', step
     if not image:
         step['note'] = '服务器下载不到这张图，预览改用接口原始链接；聊天里这条线路会被判定失败'
+        log.warning('面板试跑 %s/%s 只给了下载不到的链接: %s',
+                    step['provider'], step['model'], result['url'])
     step['ok'] = True
+    log.info('面板试跑线路成功 %s/%s 用时=%sms', step['provider'], step['model'], step['ms'])
     return result, image, step
 
 
@@ -205,6 +213,8 @@ async def _test_draw(request: web.Request) -> web.Response:
     final_prompt = central.build_prompt(current, optimized)
     record['final_prompt'] = final_prompt
 
+    log.info('面板试跑开始 线路数=%s 尺寸=%s 描述=%s',
+             len(routes), current['image_size'], final_prompt[:60])
     trace: list[dict] = []
     result = None
     image = b''
@@ -222,6 +232,7 @@ async def _test_draw(request: web.Request) -> web.Response:
             )[:1000],
             'duration_ms': round((time.perf_counter() - started) * 1000),
         })
+        log.warning('面板试跑失败：%s 条线路全部不可用', len(trace))
         await asyncio.to_thread(store.add, record, current['history_limit'])
         return web.json_response({
             'success': False,
