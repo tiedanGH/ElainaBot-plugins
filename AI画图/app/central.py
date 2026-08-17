@@ -6,6 +6,8 @@ import binascii
 import json
 import re
 
+import aiohttp
+
 from core.base.logger import PLUGIN, get_logger
 
 from . import config as draw_config
@@ -20,6 +22,7 @@ _MODERATION_BLOCKED = '内容违规，已禁止发送'
 _DATA_URI = re.compile(r'data:image/([A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]{32,})')
 _MARKDOWN_IMAGE = re.compile(r'!\[[^\]]*\]\(\s*(\S+?)\s*\)')
 _BARE_URL = re.compile(r'https?://\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?', re.IGNORECASE)
+_BEARER = re.compile(r'(?i)\bBearer\s+[A-Za-z0-9._~+\-/=]+')
 _CHAT_IMAGE_MAX_TOKENS = 65536
 # 中转明确回「这个模型不在 images 端点上」时，不必等管理员去面板改开关，直接改走对话端点。
 _IMAGES_ENDPOINT_REJECTED = re.compile(
@@ -272,6 +275,138 @@ def _image_from_text(text: str) -> tuple[bytes, str]:
     return b'', ''
 
 
+def _scrub(text, secret: str = '') -> str:
+    """任何要外泄的文本都先过一遍：抹掉密钥本身和 Bearer 头。"""
+    value = str(text or '')
+    if secret and len(secret) >= 8:
+        value = value.replace(secret, '[密钥已隐藏]')
+    return _BEARER.sub('Bearer [密钥已隐藏]', value)
+
+
+def _direct_endpoint(config: dict, provider_id: str) -> dict:
+    """取直连所需的接口信息。**调试开关关闭时直接抛错，不碰密钥。**"""
+    if not config.get('debug_direct_request'):
+        raise RuntimeError(
+            '插件直连未开启：该中转把图片放在 message.images 里，中央模块只取 content。'
+            '需要在面板「生图线路」页打开「插件直连调试」，插件才会读取接口密钥自行请求'
+        )
+    service = get_service()
+    if service is None:
+        raise RuntimeError(status()['message'])
+    provider = next(
+        (item for item in service.config().get('providers', [])
+         if item.get('id') == provider_id and item.get('enabled')),
+        None,
+    )
+    if provider is None:
+        raise RuntimeError('接口不存在或未启用')
+    api_type = str(provider.get('api_type') or 'openai_compatible')
+    if api_type not in {'openai', 'openai_compatible'}:
+        raise RuntimeError(f'插件直连只支持 OpenAI 兼容接口，当前接口类型是 {api_type}')
+    base_url = str(provider.get('base_url') or '').strip().rstrip('/')
+    api_key = str(provider.get('api_key') or '')
+    if not base_url or not api_key:
+        raise RuntimeError('该接口缺少 Base URL 或 API Key，无法直连')
+    path = str(provider.get('chat_path') or '/chat/completions').strip()
+    return {
+        'endpoint': base_url + '/' + path.lstrip('/'),
+        'api_key': api_key,
+        'timeout': int(public_config().get('request_timeout') or 120),
+    }
+
+
+def _image_from_message(message: dict) -> tuple[bytes, str]:
+    """按各家中转的返回形态依次找图片。"""
+    candidates = []
+    for item in message.get('images') or []:
+        if isinstance(item, dict):
+            candidates.append(str((item.get('image_url') or {}).get('url') or item.get('url') or ''))
+        elif isinstance(item, str):
+            candidates.append(item)
+    single = message.get('image')
+    if isinstance(single, dict):
+        candidates.append(str((single.get('image_url') or {}).get('url') or single.get('url') or ''))
+    content = message.get('content')
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get('type') in {'image_url', 'output_image', 'image'}:
+                candidates.append(str(
+                    (item.get('image_url') or {}).get('url')
+                    or item.get('url') or item.get('data') or ''
+                ))
+    for value in candidates:
+        target = value.strip()
+        if target.startswith('data:image/'):
+            match = _DATA_URI.search(target)
+            if match:
+                try:
+                    return base64.b64decode(''.join(match.group(2).split()), validate=True), ''
+                except (ValueError, binascii.Error):
+                    continue
+        elif target.startswith(('http://', 'https://')):
+            return b'', target
+    # 最后再看正文里有没有 data URI / Markdown 图片 / 裸链接
+    return _image_from_text(content if isinstance(content, str) else '')
+
+
+async def _direct_chat_image(config: dict, prompt: str, route: dict) -> dict:
+    """绕过中央模块直接请求对话端点，能拿到 message.images 里的图片。
+
+    只有面板「插件直连调试」打开时才走到这里。密钥只在本函数内构造请求头，
+    不写日志、不进异常文本，所有外抛文本都过 `_scrub()`。
+    """
+    target = _direct_endpoint(config, route['provider_id'])
+    secret = target['api_key']
+    payload = {
+        'model': route['model'],
+        'messages': [{'role': 'user', 'content': prompt}],
+        'modalities': ['image', 'text'],
+    }
+    timeout = aiohttp.ClientTimeout(total=min(300, max(30, target['timeout'])))
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                target['endpoint'],
+                headers={
+                    'Authorization': f'Bearer {secret}',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                json=payload,
+                allow_redirects=False,
+            ) as response:
+                raw = await response.text()
+                if response.status < 200 or response.status >= 300:
+                    raise RuntimeError(
+                        f'HTTP {response.status}: {_scrub(raw[:600], secret)}'
+                    )
+    except RuntimeError:
+        raise
+    except Exception as error:  # noqa: BLE001 - 网络异常也要脱敏后再上抛
+        raise RuntimeError('直连请求失败：' + _scrub(error, secret)[:300]) from None
+    try:
+        message = json.loads(raw)['choices'][0]['message']
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise RuntimeError(
+            '直连返回里没有 choices[0].message：' + _scrub(raw[:300], secret)
+        ) from None
+    message = message if isinstance(message, dict) else {}
+    data, url = _image_from_message(message)
+    if not data and not url:
+        fields = '/'.join(sorted(message)) or '空'
+        body = ' '.join(str(message.get('content') or '').split())[:200]
+        raise RuntimeError(
+            f'直连拿到回复但没有图片，message 字段有：{fields}；'
+            f'正文：{_scrub(body, secret)}'
+        )
+    return {
+        'data': data, 'url': url,
+        'provider': provider_name(route['provider_id']),
+        'provider_id': route['provider_id'],
+        'model': route['model'],
+    }
+
+
 async def _chat_image(config: dict, prompt: str, route: dict) -> dict:
     """走对话端口出图（Gemini 等多模态模型），从回复正文里取图片。"""
     service = get_service()
@@ -289,7 +424,8 @@ async def _chat_image(config: dict, prompt: str, route: dict) -> dict:
         if '空消息' in str(error):
             raise RuntimeError(
                 '该接口把图片放在 message.images 字段里，中央 AI LLM 只取 content，'
-                '插件拿不到图片。这种中转需要改 modules/ai_llm 才能支持'
+                '插件拿不到图片。请在面板「生图线路」页打开「插件直连调试」，'
+                '插件才会自行请求接口取到这张图'
             ) from error
         raise
     text = str(result.get('text') or '')
@@ -361,7 +497,7 @@ async def generate(config: dict, prompt: str, *, exclude=()) -> dict:
         chat_mode = route.get('mode') == 'chat'
         try:
             if chat_mode:
-                return await _chat_image(config, prompt, route)
+                return await _chat_via(config, prompt, route)
             return await _images_endpoint(config, prompt, route)
         except Exception as error:  # noqa: BLE001 - 逐条线路汇总，最后统一上抛
             if chat_mode or not _IMAGES_ENDPOINT_REJECTED.search(str(error)):
@@ -370,9 +506,16 @@ async def generate(config: dict, prompt: str, *, exclude=()) -> dict:
             # 中转明说这个模型不在生图端点上（Gemini 这类多模态模型），自动改走对话端点。
             log.info('%s 不在生图端点上，自动改走对话端点重试', label)
             try:
-                return await _chat_image(config, prompt, route)
+                return await _chat_via(config, prompt, route)
             except Exception as retry_error:  # noqa: BLE001 - 两次都失败就一起报出来
                 errors.append(
                     f'{label}: 生图端点不支持该模型，自动改走对话端点后仍失败：{retry_error}'
                 )
     raise RuntimeError('；'.join(errors)[:1200])
+
+
+async def _chat_via(config: dict, prompt: str, route: dict) -> dict:
+    """对话端点出图：开了直连调试就自己发请求，否则借中央模块的 complete()。"""
+    if config.get('debug_direct_request'):
+        return await _direct_chat_image(config, prompt, route)
+    return await _chat_image(config, prompt, route)

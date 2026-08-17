@@ -37,6 +37,9 @@ DEFAULT_CONFIG = {
     'image_routes': [],
     'image_size': '1024x1024',
     'delivery_max_attempts': 2,
+    # ⚠ 调试开关：允许插件绕过中央模块直接向接口发对话请求（需要读取中央模块的密钥）。
+    # 默认关闭；关闭时插件在任何代码路径上都不会去取密钥。
+    'debug_direct_request': False,
     # 提示词
     'prompt_optimize_enabled': True,
     'prompt_provider_id': '',
@@ -243,6 +246,7 @@ def validate(value: dict) -> dict:
     value['history_image_limit'] = _int_in(value.get('history_image_limit'), 200, 0, 5000)
     for key in (
         'enabled', 'group_enabled', 'direct_enabled', 'channel_enabled',
+        'debug_direct_request',
         'prompt_optimize_enabled', 'notice_enabled', 'mention_user',
         'markdown_send', 'force_verify_image', 'media_fallback',
         'owner_bypass_limits', 'moderation_enabled', 'moderation_fail_closed',
