@@ -38,7 +38,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.9.1',
+    'version': '1.9.2',
     'license': 'MIT',
 }
 
@@ -953,6 +953,7 @@ async def _answer(event, question: str) -> None:
     async def tool_handler(name: str, arguments: dict):
         nonlocal tool_calls, spent, draws
         tool_calls += 1
+        reuse = False
         if str(name) == drawing.TOOL_NAME:
             # 牵涉具体游戏的画图，必须先把游戏内容读出来 —— 挡在这里而不是只写进
             # 提示词：提示词能被无视，这道闸不能。挡下来不算一次画图额度。
@@ -961,21 +962,29 @@ async def _answer(event, question: str) -> None:
                 used_tools.add(str(name))
                 log.info('画图请求牵涉具体游戏，要求先检索源码')
                 return {'ok': False, 'error': hold}
+            # 复用已画好的图不占额度。少了这一步，被超时打断后的重试会卡在
+            # 「本次已经画过 1 张」上 —— 明明有现成的图，却一张都发不出去。
+            reuse = await drawing.reusable(arguments, current, scope)
             # 单次问答的画图次数上限。模型可以在 max_tool_rounds 轮里反复调用，
             # 不在这儿卡死的话，一个提问就能把 AI 画图的日额度掏空、并连发十条图。
             cap = int(current.get('draw_max_per_question') or 1)
-            if draws >= cap:
+            if not reuse and draws >= cap:
                 used_tools.add(str(name))
                 return {'ok': False, 'error': f'本次回答已经画过 {cap} 张图了，不能再画。'}
-            draws += 1
-        result = await tools.run(name, arguments, current)
+            if not reuse:
+                draws += 1
+        result = await tools.run(name, arguments, current, scope)
         used_tools.add(str(name))
         if str(name) == drawing.TOOL_NAME:
             # 链接摘出来自己发，不回灌给模型（理由见 drawing.detach_image）
             image = drawing.detach_image(result)
             if image:
-                drawn.append(image)
-            else:
+                if image.get('reused'):
+                    await _bump('draws_reused')
+                # 同一张图别发两遍：模型重复调用、或重试命中缓存都会走到这儿
+                if not any(item['url'] == image['url'] for item in drawn):
+                    drawn.append(image)
+            elif not reuse:
                 draws -= 1   # 没出图就不占额度，让模型换个描述还能再试
             # 结果只剩一句话，占不了多少，但仍要计进预算 —— 漏算就等于给 413 让路。
             # 不进 transcript：合成兜底要的是源码，一句「图已生成」没有合成价值。
@@ -1185,6 +1194,7 @@ async def _maybe_prune(current: dict) -> None:
     try:
         await asyncio.to_thread(
             store.prune_expired, int(current.get('context_expire_seconds') or 3600),
+            int(current.get('draw_cache_seconds') or 86400),
         )
     except Exception as error:  # noqa: BLE001 — 清理失败不值得中断问答
         log.debug(f'清理过期上下文失败: {error}')

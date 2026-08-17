@@ -557,15 +557,19 @@ _HANDLERS = {
 }
 
 
-async def run(name: str, arguments: dict, current: dict) -> dict:
-    """工具总入口。磁盘 IO 放线程池，避免阻塞事件循环里的消息收发。"""
+async def run(name: str, arguments: dict, current: dict, scope: str = '') -> dict:
+    """工具总入口。磁盘 IO 放线程池，避免阻塞事件循环里的消息收发。
+
+    ``scope`` 只有画图用得上：已画图片按「谁问的 + 画什么」缓存，键里要带上它。
+    面板试跑不传，落到独立的空 scope，不会撞上群友的缓存。
+    """
     if not isinstance(arguments, dict):
         arguments = {}
     # 画图是网络调用，本身就是协程，不能塞进 to_thread。
     # 它的开关判断在 drawing.run 里 —— 那是唯一的执行入口，模型把调用写成 XML
     # 文本被 main.py 代为执行时也要经过这里，只挡 schema 是拦不住的。
     if str(name or '') == drawing.TOOL_NAME:
-        return await drawing.run(arguments, current)
+        return await drawing.run(arguments, current, scope)
     handler = _HANDLERS.get(str(name or ''))
     if handler is None:
         return {'ok': False, 'error': f'未知工具: {name}'}

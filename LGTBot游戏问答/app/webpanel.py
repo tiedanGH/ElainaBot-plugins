@@ -154,6 +154,7 @@ async def _clear_context(request: web.Request) -> web.Response:
         current = config.load()
         deleted = await asyncio.to_thread(
             store.prune_expired, int(current.get('context_expire_seconds') or 3600),
+            int(current.get('draw_cache_seconds') or 86400),
         )
     else:
         deleted = await asyncio.to_thread(store.clear, scope)

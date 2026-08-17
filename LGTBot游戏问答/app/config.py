@@ -189,6 +189,12 @@ DEFAULT_CONFIG = {
     # 表现出来就是所有人都问不了。0 = 不限（不建议）。
     'draw_timeout_seconds': 120,
 
+    # 已画图片的保留时长。画一张要几十秒、还要烧对方的额度，画完就得留住：
+    # 请求被超时打断、或用户把同一句话再问一遍时直接复用，不再画第二张。
+    # 按「谁问的 + 画什么」做键，不会拿到别人那张图。
+    # 设太长的风险是图床链接可能已经失效；0 = 不缓存（每次都重画，不建议）。
+    'draw_cache_seconds': 86400,
+
     # ---- 内容安全----
     # moderation_fail_closed 只影响**输入**审核；输出审核永远 fail-closed，
     # 审核不可用时一律不发 —— 见 main.py::_output_rejected。
@@ -318,6 +324,7 @@ _INT_FIELDS = {
     'file_max_bytes': (10000, 2000000),
     'draw_max_per_question': (1, 5),
     'draw_timeout_seconds': (0, 600),
+    'draw_cache_seconds': (0, 2592000),
 }
 
 

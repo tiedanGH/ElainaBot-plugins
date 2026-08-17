@@ -56,7 +56,29 @@ def is_transient(error) -> bool:
     return any(marker in text for marker in _TRANSIENT_MARKERS)
 
 
-async def _bounded(make_coro, current: dict, label: str):
+def tool_time_budget(current: dict) -> float:
+    """工具执行本身要额外留多少秒。
+
+    ``request_timeout_seconds`` 管的是**整次 complete()**，中央模块把工具执行也
+    算在里面。检索工具都是本地磁盘 IO，可以忽略；**画图不行** —— 一张几十秒，
+    直接把 90 秒的额度吃掉，然后我们自己的 wait_for 取消整条调用链，中央那边
+    记成 error='interrupted'（modules/ai_llm/app/service.py:1893）。
+
+    生产日志里三条连着的 interrupted，duration_ms 分别是 90013 / 90012 / 90014，
+    正好是超时值 —— 三次重试全被自己的超时打断，一次都没轮到模型写答案。
+
+    所以画图开着时按**最坏情况**加额度：一次问答最多画 draw_max_per_question 张，
+    每张最多 draw_timeout_seconds 秒。加的是上界，只有真画图才会用到。
+    """
+    if not current.get('draw_enabled'):
+        return 0.0
+    return (
+        max(0.0, float(current.get('draw_timeout_seconds') or 0))
+        * max(1, int(current.get('draw_max_per_question') or 1))
+    )
+
+
+async def _bounded(make_coro, current: dict, label: str, extra_timeout: float = 0.0):
     """调用模型：套超时 + 瞬时故障自动重试。
 
     ``make_coro`` 必须是**每次现造协程**的工厂 —— 协程不能 await 两次，
@@ -64,10 +86,15 @@ async def _bounded(make_coro, current: dict, label: str):
 
     超时的意义：卡住的请求会一直占着并发槽（默认只有 2 个），后面所有人都被
     挡在门外，单个请求慢会变成整个功能不可用。
+    ``extra_timeout`` 给工具执行留的额外额度，见 tool_time_budget —— 不留的话
+    带画图的那次调用必然被自己的超时打断。
+
     重试的意义：一次问答常常已经跑了十几个工具，不该被一次网关抖动全部作废。
     退避是线性的（delay × 第几次），够应付网关抖动，又不会把并发槽占太久。
     """
     timeout = float(current.get('request_timeout_seconds') or 90)
+    if timeout > 0:
+        timeout += max(0.0, float(extra_timeout))
     tries = max(1, int(current.get('retry_attempts') or 3))
     delay = max(0.0, float(current.get('retry_delay_seconds') or 2))
     last_error: Exception | None = None
@@ -443,4 +470,4 @@ async def ask(
         session_id=session_id,
         consumer_plugin=CONSUMER,
         prepare_context=False,
-    ), current, '模型调用')
+    ), current, '模型调用', tool_time_budget(current))

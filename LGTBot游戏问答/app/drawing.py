@@ -15,12 +15,43 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 from core.base.logger import PLUGIN, get_logger
 
-from . import central
+from . import central, store
 
 log = get_logger(PLUGIN, 'LGTBot游戏问答')
+
+# 正在跑的画图任务：缓存键 → Task。
+#
+# 这两层（内存任务 + 落盘缓存）是给「请求被打断」准备的。中央模块的单次调用超时
+# 覆盖**整个** complete()，工具执行时间也算在内；画图动辄几十秒，一旦撞线，
+# asyncio.wait_for 会取消整条调用链，中央那边记成 error='interrupted'
+# （modules/ai_llm/app/service.py:1893），而我们这边会退避重试。
+#
+# 问题在于：图那时候往往**已经在画甚至画完了**。重试再画一张，等于同一个请求
+# 烧两次额度，用户还是什么都没收到。所以画图跑在独立任务里、用 shield 挡住取消：
+# 调用方被取消，任务照样跑完并把结果写进缓存，下次（重试或用户重问）直接复用。
+_pending: dict = {}
+
+
+def _normalize(prompt: str) -> str:
+    return ' '.join(str(prompt or '').split())
+
+
+def _cache_key(scope: str, prompt: str) -> str:
+    """按「谁问的 + 画什么」做键。
+
+    带上 scope 是刻意的：不同用户提同样的描述，各自出各自的图，不会拿到别人那张。
+    只在同一个人重试 / 重问时才复用 —— 那正是被打断后要救的场景。
+    """
+    raw = f'{scope}\x00{_normalize(prompt)}'.encode()
+    return hashlib.sha1(raw).hexdigest()
+
+
+def _cache_ttl(current: dict) -> int:
+    return int(current.get('draw_cache_seconds') or 0)
 
 SOURCE = 'ai_draw'          # AI画图 注册时用的 source_plugin
 CAPABILITY_ID = 'draw'      # 它的能力 id
@@ -146,22 +177,23 @@ def detach_image(result: dict) -> dict:
         return {}
     url = str(result.pop('url', '') or '')
     size = str(result.pop('size', '') or '')
+    reused = bool(result.pop('reused', False))
     result.pop('record_id', None)
     if not (result.get('ok') and url):
         return {}
-    result['note'] = '图片已生成，机器人会自动发给用户。直接用一句话回应即可，不要写链接。'
-    return {'url': url, 'size': size}
+    result['note'] = (
+        '这张图之前已经画好了，直接复用，没有重新生成。' if reused
+        else '图片已生成，'
+    ) + '机器人会自动发给用户。直接用一句话回应即可，不要写链接。'
+    return {'url': url, 'size': size, 'reused': reused}
 
 
-async def run(arguments: dict, current: dict) -> dict:
-    """执行一次画图。任何失败都收敛成 {'ok': False, 'error': ...} 交给模型。"""
-    if not enabled(current):
-        return {'ok': False, 'error': '画图能力未开启'}
-    prompt = str((arguments or {}).get('prompt') or '').strip()
-    if not prompt:
-        return {'ok': False, 'error': '缺少画面描述 prompt'}
-    prompt = prompt[:_PROMPT_MAX]
+async def _generate(prompt: str, current: dict, key: str) -> dict:
+    """真正调一次画图，成功就落盘缓存。
 
+    **这个协程跑在独立任务里**（见 run 的 shield）：调用方被超时取消也不影响它跑完。
+    图已经在画了，丢掉纯属浪费额度 —— 跑完把结果写进缓存，下次直接拿。
+    """
     service = central.get_service()
     if service is None or not hasattr(service, 'call_capability'):
         return {'ok': False, 'error': '中央 AI LLM 模块不可用'}
@@ -169,8 +201,8 @@ async def run(arguments: dict, current: dict) -> dict:
     if item is None:
         return {'ok': False, 'error': state()['message']}
 
-    # 出图比一次模型调用慢得多（实测几十秒），必须单独设超时：这一路挂住会一直
-    # 占着本插件的并发槽，后面所有人的提问都被挡在门外。
+    # 出图比一次模型调用慢得多（实测几十秒），必须单独设超时：任务挂住不放会一直
+    # 留在 _pending 里，后面同样的描述会一直等它。
     timeout = float(current.get('draw_timeout_seconds') or 0)
     call = service.call_capability(
         consumer_plugin=central.CONSUMER,
@@ -194,11 +226,79 @@ async def run(arguments: dict, current: dict) -> dict:
     url = str(result.get('url') or '')
     if not url:
         return {'ok': False, 'error': '画图成功但没有拿到图片链接'}
-    log.info(f'画图完成（{result.get("model") or "未知模型"}）')
     # size 是 AI 画图配置的出图尺寸（如 1024x1024）。留着给 Markdown 图片消息用 ——
     # QQ 的 `![alt #宽px #高px](url)` 要这两个数，有真实值就不用瞎猜。
-    return {
-        'ok': True, 'url': url,
-        'model': str(result.get('model') or ''),
-        'size': str(result.get('size') or ''),
-    }
+    size = str(result.get('size') or '')
+    if _cache_ttl(current) > 0:
+        try:
+            await asyncio.to_thread(store.draw_cache_put, key, url, size)
+        except Exception as error:  # noqa: BLE001 — 缓存写不进去顶多下次重画
+            log.warning(f'画图结果缓存失败: {error}')
+    log.info(f'画图完成（{result.get("model") or "未知模型"}）')
+    return {'ok': True, 'url': url, 'model': str(result.get('model') or ''), 'size': size}
+
+
+async def _cached(key: str, current: dict) -> dict:
+    ttl = _cache_ttl(current)
+    if ttl <= 0:
+        return {}
+    try:
+        return await asyncio.to_thread(store.draw_cache_get, key, ttl)
+    except Exception as error:  # noqa: BLE001 — 缓存读不到就当没有，照常画
+        log.debug(f'画图缓存读取失败: {error}')
+        return {}
+
+
+async def reusable(arguments: dict, current: dict, scope: str = '') -> bool:
+    """这次画图能不能**不花额度**拿到图：缓存里有，或已经有一模一样的在跑。
+
+    给 main.py 的张数上限用 —— 复用不该占额度，否则被打断后重试会卡在
+    「本次已经画过 1 张」上，明明有现成的图却发不出去。
+    """
+    if not enabled(current):
+        return False
+    prompt = _normalize(str((arguments or {}).get('prompt') or ''))[:_PROMPT_MAX]
+    if not prompt:
+        return False
+    key = _cache_key(scope, prompt)
+    task = _pending.get(key)
+    if task is not None and not task.done():
+        return True
+    return bool(await _cached(key, current))
+
+
+async def run(arguments: dict, current: dict, scope: str = '') -> dict:
+    """执行一次画图。任何失败都收敛成 {'ok': False, 'error': ...} 交给模型。
+
+    三条路，按代价从低到高：
+      1. 缓存命中 —— 同一个人刚画过同样的东西，直接复用
+      2. 已经有一模一样的任务在跑 —— 等它，不再起一个
+      3. 都没有 —— 起一个独立任务去画
+
+    `asyncio.shield` 是关键：我们这次 await 被取消（外层超时）时，任务本身**不会**
+    被取消，会继续画完并写缓存。否则每次超时都白扔一张已经在画的图。
+    """
+    if not enabled(current):
+        return {'ok': False, 'error': '画图能力未开启'}
+    prompt = _normalize(str((arguments or {}).get('prompt') or ''))
+    if not prompt:
+        return {'ok': False, 'error': '缺少画面描述 prompt'}
+    prompt = prompt[:_PROMPT_MAX]
+    key = _cache_key(scope, prompt)
+
+    cached = await _cached(key, current)
+    if cached:
+        log.info('画图命中缓存，直接复用已有图片')
+        return {'ok': True, 'reused': True, 'model': '', **cached}
+
+    task = _pending.get(key)
+    if task is None or task.done():
+        task = asyncio.ensure_future(_generate(prompt, current, key))
+        _pending[key] = task
+        # 任务自己收尾：跑完就从 _pending 摘掉，别让字典无限长
+        task.add_done_callback(
+            lambda done, k=key: _pending.pop(k, None) if _pending.get(k) is done else None
+        )
+    else:
+        log.info('同样的描述已经在画，等它出结果而不是再画一张')
+    return await asyncio.shield(task)

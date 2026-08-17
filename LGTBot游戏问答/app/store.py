@@ -39,6 +39,15 @@ CREATE TABLE IF NOT EXISTS counters (
     key   TEXT PRIMARY KEY,
     value INTEGER NOT NULL DEFAULT 0
 );
+
+-- 已经画出来的图。画一张要几十秒、要烧对方的额度，画完就得留住 ——
+-- 请求被超时打断、用户重问一遍时直接复用，不再画第二张。
+CREATE TABLE IF NOT EXISTS draw_cache (
+    key        TEXT PRIMARY KEY,
+    url        TEXT    NOT NULL,
+    size       TEXT    NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
 """
 
 
@@ -138,14 +147,48 @@ def clear(scope: str) -> int:
         return cursor.rowcount
 
 
-def prune_expired(expire_seconds: int) -> int:
+def prune_expired(expire_seconds: int, draw_ttl: int = 86400) -> int:
     floor = int(time.time()) - max(60, int(expire_seconds))
     with _lock:
         db = _db()
         cursor = db.execute('DELETE FROM messages WHERE created_at < ?', (floor,))
         db.execute('DELETE FROM usage WHERE day < ?', (_day(-30),))
+        db.execute(
+            'DELETE FROM draw_cache WHERE created_at < ?',
+            (int(time.time()) - max(60, int(draw_ttl)),),
+        )
         db.commit()
         return cursor.rowcount
+
+
+# ==================== 画图结果缓存 ====================
+
+
+def draw_cache_get(key: str, ttl: int) -> dict:
+    """取一张还没过期的已画图片。ttl <= 0 表示不启用缓存。"""
+    if ttl <= 0 or not key:
+        return {}
+    floor = int(time.time()) - int(ttl)
+    with _lock:
+        row = _db().execute(
+            'SELECT url, size FROM draw_cache WHERE key = ? AND created_at >= ?',
+            (str(key), floor),
+        ).fetchone()
+    return {'url': row['url'], 'size': row['size']} if row else {}
+
+
+def draw_cache_put(key: str, url: str, size: str = '') -> None:
+    if not key or not url:
+        return
+    with _lock:
+        db = _db()
+        db.execute(
+            'INSERT INTO draw_cache (key, url, size, created_at) VALUES (?, ?, ?, ?) '
+            'ON CONFLICT(key) DO UPDATE SET url = excluded.url, size = excluded.size, '
+            'created_at = excluded.created_at',
+            (str(key), str(url), str(size or ''), int(time.time())),
+        )
+        db.commit()
 
 
 # ==================== 用量 ====================
@@ -219,6 +262,7 @@ def stats() -> dict:
         'overflows_total': counters.get('overflows', 0),
         'recovered_calls_total': counters.get('recovered_calls', 0),
         'draws_total': counters.get('draws', 0),
+        'draws_reused_total': counters.get('draws_reused', 0),
         'resumed_total': counters.get('resumed', 0),
         'busy_global_total': counters.get('busy_global', 0),
         'ungrounded_total': counters.get('ungrounded', 0),
