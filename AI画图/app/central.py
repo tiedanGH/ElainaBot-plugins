@@ -2,13 +2,22 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
+import re
 
 from . import config as draw_config
 
 CONSUMER = 'ai_draw'
 _MODERATION_SAFE = '安全'
 _MODERATION_BLOCKED = '内容违规，已禁止发送'
+# Gemini 这类多模态模型不在 /v1/images/generations 上，得走对话端口，
+# 图片混在回复正文里返回。中央模块只把 message.content 当文本交回来，
+# 所以这里只能从文本里把图片捞出来：data URI 或 Markdown/裸链接。
+_DATA_URI = re.compile(r'data:image/([A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]{32,})')
+_MARKDOWN_IMAGE = re.compile(r'!\[[^\]]*\]\(\s*(\S+?)\s*\)')
+_BARE_URL = re.compile(r'https?://\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?', re.IGNORECASE)
+_CHAT_IMAGE_MAX_TOKENS = 65536
 
 
 def _raw_service():
@@ -228,29 +237,75 @@ def build_prompt(config: dict, text: str) -> str:
     return prompt[:max(50, int(config.get('prompt_max_length', 1200)))]
 
 
-async def generate(config: dict, prompt: str, *, exclude=()) -> dict:
-    """调用中央生图能力；返回 {data, url, provider, provider_id, model}。
+def _image_from_text(text: str) -> tuple[bytes, str]:
+    """从对话回复正文里捞出图片：data URI 直接解码，链接原样返回。"""
+    value = str(text or '')
+    match = _DATA_URI.search(value)
+    if match:
+        try:
+            return base64.b64decode(''.join(match.group(2).split()), validate=True), ''
+        except (ValueError, binascii.Error):
+            pass
+    for candidate in (
+        *(item for item in _MARKDOWN_IMAGE.findall(value)),
+        *(_BARE_URL.findall(value)),
+    ):
+        target = str(candidate).strip().rstrip(')>,。')
+        if target.startswith('data:image/'):
+            inner = _DATA_URI.search(target)
+            if inner:
+                try:
+                    return base64.b64decode(''.join(inner.group(2).split()), validate=True), ''
+                except (ValueError, binascii.Error):
+                    continue
+        elif target.startswith(('http://', 'https://')):
+            return b'', target
+    return b'', ''
 
-    `exclude` 传入已经试过的 (provider_id, model)，用于投递失败后换下一条线路重试。
-    """
+
+async def _chat_image(config: dict, prompt: str, route: dict) -> dict:
+    """走对话端口出图（Gemini 等多模态模型），从回复正文里取图片。"""
     service = get_service()
-    if service is None:
-        raise RuntimeError(status()['message'])
+    try:
+        result = await service.complete(
+            [{'role': 'user', 'content': prompt}],
+            provider_id=route['provider_id'],
+            model=route['model'],
+            max_tokens=_CHAT_IMAGE_MAX_TOKENS,
+            consumer_plugin=CONSUMER,
+            enable_runtime_tools=False,
+            prepare_context=False,
+        )
+    except Exception as error:
+        if '空消息' in str(error):
+            raise RuntimeError(
+                '该接口把图片放在 message.images 字段里，中央 AI LLM 只取 content，'
+                '插件拿不到图片。这种中转需要改 modules/ai_llm 才能支持'
+            ) from error
+        raise
+    text = str(result.get('text') or '')
+    data, url = _image_from_text(text)
+    if not data and not url:
+        raise RuntimeError(
+            '对话端口没有返回图片，模型只回了文字：'
+            + ' '.join(text.split())[:200]
+        )
+    return {
+        'data': data, 'url': url,
+        'provider': str(result.get('provider_name') or route['provider_id']),
+        'provider_id': str(result.get('provider_id') or route['provider_id']),
+        'model': str(result.get('model') or route['model']),
+    }
+
+
+async def _images_endpoint(config: dict, prompt: str, route: dict) -> dict:
+    """走标准 /v1/images/generations 出图。"""
+    service = get_service()
     if not hasattr(service, 'generate_image'):
         raise RuntimeError('当前 AI LLM 模块版本不支持生图接口')
-    skipped = {tuple(item) for item in (exclude or ())}
-    routes = [
-        item for item in valid_routes(config)
-        if (item['provider_id'], item['model']) not in skipped
-    ]
-    if not routes:
-        raise RuntimeError(
-            '其余生图线路都已试过，仍未能把图片送达' if skipped
-            else '没有可用的生图线路，请先在面板中配置接口与模型'
-        )
     result = await service.generate_image(
         prompt,
-        candidates=routes,
+        candidates=[route],
         size=str(config.get('image_size') or '1024x1024'),
     )
     encoded = str(result.get('b64_json') or '').strip()
@@ -258,7 +313,7 @@ async def generate(config: dict, prompt: str, *, exclude=()) -> dict:
     if encoded:
         try:
             data = base64.b64decode(encoded, validate=True)
-        except (ValueError, TypeError) as error:
+        except (ValueError, TypeError, binascii.Error) as error:
             raise RuntimeError('生图接口返回的图片数据无效') from error
     url = str(result.get('url') or '').strip()
     if not data and not url.startswith(('http://', 'https://')):
@@ -270,3 +325,34 @@ async def generate(config: dict, prompt: str, *, exclude=()) -> dict:
         'provider_id': str(result.get('provider_id') or ''),
         'model': str(result.get('model') or ''),
     }
+
+
+async def generate(config: dict, prompt: str, *, exclude=()) -> dict:
+    """按线路顺序出图；返回 {data, url, provider, provider_id, model}。
+
+    每条线路按自己的 `mode` 走生图端口或对话端口，失败则换下一条并汇总原因。
+    `exclude` 传入已经试过的 (provider_id, model)，用于投递失败后换线路重试。
+    """
+    service = get_service()
+    if service is None:
+        raise RuntimeError(status()['message'])
+    skipped = {tuple(item) for item in (exclude or ())}
+    routes = [
+        item for item in valid_routes(config)
+        if (item['provider_id'], item['model']) not in skipped
+    ]
+    if not routes:
+        raise RuntimeError(
+            '其余生图线路都已试过，仍未能把图片送达' if skipped
+            else '没有可用的生图线路，请先在面板中配置接口与模型'
+        )
+    errors = []
+    for route in routes:
+        runner = _chat_image if route.get('mode') == 'chat' else _images_endpoint
+        try:
+            return await runner(config, prompt, route)
+        except Exception as error:  # noqa: BLE001 - 逐条线路汇总，最后统一上抛
+            errors.append(
+                f"{provider_name(route['provider_id'])}/{route['model']}: {error}"
+            )
+    raise RuntimeError('；'.join(errors)[:1200])

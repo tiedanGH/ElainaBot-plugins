@@ -7,6 +7,8 @@ import os
 import threading
 
 IMAGE_SIZES = ('256x256', '512x512', '1024x1024', '1024x1536', '1536x1024')
+# image = /v1/images/generations；chat = /v1/chat/completions（Gemini 等多模态模型）
+ROUTE_MODES = ('image', 'chat')
 
 DEFAULT_PROMPT_SYSTEM = (
     '你是文生图提示词工程师。把用户的中文画面需求改写成一段可以直接提交给生图模型的提示词。'
@@ -184,9 +186,12 @@ def validate(value: dict) -> dict:
         key = (provider_id, model)
         if not provider_id or not model or key in seen:
             continue
+        # mode=chat 走 /v1/chat/completions（Gemini 这类多模态模型不在生图端点上）
+        mode = str(item.get('mode') or 'image').strip().casefold()
         normalized.append({
             'provider_id': provider_id,
             'model': model,
+            'mode': mode if mode in ROUTE_MODES else 'image',
             'enabled': bool(item.get('enabled', True)),
         })
         seen.add(key)
