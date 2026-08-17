@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import time
 
@@ -12,6 +13,7 @@ from core.plugin.web_pages import register_route
 from . import central, config, hosting, limiter, media, store
 
 PREFIX = '/api/ext/ai-draw'
+_INLINE_PREVIEW_BYTES = 8 * 1024 * 1024
 _registered = False
 
 
@@ -179,30 +181,26 @@ async def _test_draw(request: web.Request) -> web.Response:
         'duration_ms': round((time.perf_counter() - started) * 1000),
         'provider': result['provider'], 'provider_id': result['provider_id'],
         'model': result['model'], 'size': current['image_size'],
-        'image_url': result['url'], 'delivered': 1,
+        'image_url': result['url'], 'delivered': 1, 'send_mode': 'panel',
     })
+    # 试跑只在面板里看图，不上传图床：预览直接读本地留存，省掉一次图床额度。
     image = result['data'] or (await media.download(result['url']) or b'')
-    # 试跑同样走一遍图床，管理员据此确认 Markdown 发送链路是否可用。
-    hosted = ''
-    hosting_error = ''
-    if image and current['markdown_send']:
-        hosted = await hosting.upload(image, f'ai-draw-test-{int(time.time())}.{media.sniff(image)[0]}')
-        hosting_error = '' if hosted else hosting.state()['message']
-    record.update({'hosted_url': hosted, 'send_mode': 'markdown' if hosted else 'media'})
     record_id = await asyncio.to_thread(store.add, record, current['history_limit'])
+    stored = False
     if image and current.get('history_save_images'):
-        await asyncio.to_thread(
+        stored = bool(await asyncio.to_thread(
             store.save_image, record_id, image, media.sniff(image)[0],
             current['history_image_limit'],
-        )
+        ))
     width, height = media.dimensions(image, (1024, 1024)) if image else (0, 0)
+    # 没落盘（关了历史留图）时把图片内联回面板，预览不依赖图床也不依赖存储设置。
+    preview = ''
+    if image and not stored and len(image) <= _INLINE_PREVIEW_BYTES:
+        preview = f'data:{media.sniff(image)[1]};base64,{base64.b64encode(image).decode()}'
     return web.json_response({'success': True, 'data': {
         'id': record_id, 'final_prompt': record['final_prompt'],
         'provider': record['provider'], 'model': record['model'],
         'duration_ms': record['duration_ms'], 'image_url': record['image_url'],
-        'hosted_url': hosted, 'hosting_error': hosting_error,
-        'markdown': (
-            f"![{current['markdown_alt']} #{width}px #{height}px]({hosted})" if hosted else ''
-        ),
-        'has_image': bool(image and current.get('history_save_images')),
+        'width': width, 'height': height, 'preview': preview,
+        'has_image': stored,
     }})

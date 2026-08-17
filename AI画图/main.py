@@ -16,7 +16,7 @@ __plugin_meta__ = {
     'name': 'AI 画图',
     'author': '铁蛋',
     'description': '所有人可用的「画图 XXX」指令，调用中央 AI LLM 生图，并提供配置与历史记录面板',
-    'version': '1.1.0',
+    'version': '1.1.1',
     'license': 'MIT',
 }
 
