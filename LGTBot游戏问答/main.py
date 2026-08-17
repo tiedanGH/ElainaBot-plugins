@@ -38,7 +38,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.9.2',
+    'version': '1.9.3',
     'license': 'MIT',
 }
 
@@ -793,7 +793,10 @@ _SIZE_RE = re.compile(r'^\s*(\d{2,5})\s*[x×*]\s*(\d{2,5})\s*$', re.IGNORECASE)
 
 
 def _pixel_size(size: str) -> tuple:
-    """把 AI 画图给的 `1024x1024` 解析成 (宽, 高)。
+    """把 `768x1024` 解析成 (宽, 高)。
+
+    值来自 drawing._dimensions —— 优先是 AI 画图**实测**的像素宽高，
+    而不是它请求的尺寸（有些线路不严格按请求出图）。
 
     解析不出来就按 1024 见方走：这两个数只是给客户端排版的提示，
     宽高比不准最多显示时略有拉伸，不该为它拦下一张已经画好的图。

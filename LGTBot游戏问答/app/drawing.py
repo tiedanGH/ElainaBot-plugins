@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 
 from core.base.logger import PLUGIN, get_logger
 
@@ -52,6 +53,28 @@ def _cache_key(scope: str, prompt: str) -> str:
 
 def _cache_ttl(current: dict) -> int:
     return int(current.get('draw_cache_seconds') or 0)
+
+
+_SIZE_RE = re.compile(r'^\s*(\d{2,5})\s*[x×*]\s*(\d{2,5})\s*$', re.IGNORECASE)
+
+
+def _dimensions(result: dict) -> str:
+    """从画图结果里取**实测**像素宽高，归一成 `宽x高`。
+
+    AI 画图 1.5.1 起返回实测的 width / height（它自己解析图片头拿到的），
+    并把「请求的尺寸」挪到了 requested_size。实测值才是对的 —— 有些线路
+    并不严格按请求尺寸出图，照请求值写 Markdown 会让客户端按错误比例排版。
+
+    下不到图片字节时它**不返回** width / height（免得 0 被当成真实值），
+    那就退回 requested_size；再不行交给调用方按默认值处理。
+    `size` 是 1.5.0 的旧键名，一并认，省得对方版本没跟上就取不到数。
+    """
+    width = int(result.get('width') or 0)
+    height = int(result.get('height') or 0)
+    if width > 0 and height > 0:
+        return f'{width}x{height}'
+    match = _SIZE_RE.match(str(result.get('requested_size') or result.get('size') or ''))
+    return f'{int(match.group(1))}x{int(match.group(2))}' if match else ''
 
 SOURCE = 'ai_draw'          # AI画图 注册时用的 source_plugin
 CAPABILITY_ID = 'draw'      # 它的能力 id
@@ -226,9 +249,9 @@ async def _generate(prompt: str, current: dict, key: str) -> dict:
     url = str(result.get('url') or '')
     if not url:
         return {'ok': False, 'error': '画图成功但没有拿到图片链接'}
-    # size 是 AI 画图配置的出图尺寸（如 1024x1024）。留着给 Markdown 图片消息用 ——
-    # QQ 的 `![alt #宽px #高px](url)` 要这两个数，有真实值就不用瞎猜。
-    size = str(result.get('size') or '')
+    # 实测像素宽高，留着给 Markdown 图片消息用 —— QQ 的 `![alt #宽px #高px](url)`
+    # 要这两个数，写错了客户端就按错误的比例给图占位。
+    size = _dimensions(result)
     if _cache_ttl(current) > 0:
         try:
             await asyncio.to_thread(store.draw_cache_put, key, url, size)
