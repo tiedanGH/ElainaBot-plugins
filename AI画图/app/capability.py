@@ -22,8 +22,9 @@ _DEFINITION = {
     'id': TOOL_ID,
     'name': 'AI 画图',
     'description': (
-        '根据文字描述生成一张图片，返回图片链接与实测像素宽高（width / height），'
+        '根据文字描述生成一张图片，返回本机图床的图片直链、实测像素宽高（width / height），'
         '并附一段可直接发送的 QQ Markdown 图片语法（markdown 字段）。'
+        '返回的链接已转存到机器人自己的图床，可以直接发出去；不会给 AI 接口的原始链接。'
         '描述要写清主体、动作、场景、风格；不要传入已有图片链接。'
         '图片由 AI 画图插件统一做内容审核与留档，失败时返回 ok=false 与原因。'
     ),
@@ -123,21 +124,28 @@ async def _run(arguments: dict) -> dict:
         'model': result['model'], 'size': current['image_size'],
         'image_url': result['url'],
     })
+    # 工具返回的链接**必须**是自己图床的直链：AI 接口的原始域名没在 QQ 开放平台
+    # 报备，调用方拿去发 Markdown 图片会被拦下来不显示。所以先落到本地字节、
+    # 再上传图床；任一步拿不到就直接失败，绝不把接口链接当结果糊弄过去。
     image = result['data'] or (await media.download(result['url']) or b'')
-    # 工具只回链接：优先图床直链，其次接口原始链接。绝不回 base64。
-    url = ''
-    if image:
-        url = await hosting.upload(
-            image, f'ai-draw-{int(time.time() * 1000)}.{media.sniff(image)[0]}',
-        )
-    record['hosted_url'] = url
-    delivered_url = url or result['url']
-    if not delivered_url:
+    if not image:
         return _fail(
-            '生成成功但拿不到图片链接：图床不可用且接口只返回了图片数据。'
+            '拿不到图片内容：接口只给了一个服务器下载不到的链接，无法转上图床。'
+            '这条线路对外调用不可用',
+            record, current,
+        )
+    hosted_url = await hosting.upload(
+        image, f'ai-draw-{int(time.time() * 1000)}.{media.sniff(image)[0]}',
+    )
+    record['hosted_url'] = hosted_url
+    if not hosted_url:
+        return _fail(
+            f"图床上传失败（{hosting.state()['message']}）。"
+            '不返回接口原始链接：那个域名未在 QQ 开放平台报备，发出去图片不会显示。'
             '请在 Image Hosting 模块中配置可用图床',
             record, current,
         )
+    delivered_url = hosted_url
     record['delivered'] = 1
     try:
         record_id = store.add(record, current['history_limit'])
@@ -235,4 +243,8 @@ def state() -> dict:
         if item is not None:
             online = bool(item.get('online'))
             shared = bool(item.get('shared')) and bool(item.get('enabled'))
-    return {'key': CAPABILITY_KEY, 'online': online, 'shared': shared}
+    # 对外调用一定要过图床，图床不可用时这个工具必然失败，面板要能提前看到。
+    return {
+        'key': CAPABILITY_KEY, 'online': online, 'shared': shared,
+        'hosting_ready': hosting.available(),
+    }
