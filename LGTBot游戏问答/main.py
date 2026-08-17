@@ -30,7 +30,7 @@ from core.plugin.decorators import handler, on_load, on_unload
 from core.plugin.web_pages import register_page, unregister_page
 
 from .app import (
-    central, config, conflict, drawing, games, hosting, ratelimit, safety, sandbox, store,
+    central, config, conflict, drawing, games, ratelimit, safety, sandbox, store,
     tools, webpanel,
 )
 
@@ -38,7 +38,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.9.3',
+    'version': '1.9.4',
     'license': 'MIT',
 }
 
@@ -811,7 +811,7 @@ def _markdown_image(event, item: dict) -> str:
     """@发起人 + 换行 + 图片的 Markdown 消息（与 AI 画图同一套写法）。
 
     富媒体图片消息（msg_type=7）**不解析** `<@openid>`，群里多人同时问就对不上号；
-    Markdown 图片消息能带 @，所以图床可用时优先走这条。
+    Markdown 图片消息能带 @，所以固定走这条。
     """
     width, height = _pixel_size(item.get('size', ''))
     body = f'![{_IMAGE_ALT} #{width}px #{height}px]({item["url"]})'
@@ -831,16 +831,18 @@ def _delivered(response) -> bool:
 async def _deliver_images(event, images: list) -> None:
     """把这一轮画出来的图发给用户。逐张出队，重复调用不会重发。
 
-    两条投递路线，与 AI 画图一致：
+    直接发 Markdown 图片消息：`<@发起人>` 换行 `![alt #宽px #高px](链接)`。
 
-      1. 图床可用 → Markdown 图片消息：`<@发起人>` 换行 `![alt #宽px #高px](链接)`
-      2. 图床不可用、或 Markdown 没送达 → 富媒体图片消息（`reply_image`）
+    **本插件不碰图床。** AI 画图 1.5.2 起，工具返回的链接**一定**是机器人自己图床的
+    直链 —— 它先把图落成字节再转存图床，转存不成就直接 ok=false，绝不回落到 AI 接口的
+    原始链接（那个域名没在 QQ 开放平台报备，发出去图不显示）。也就是说：拿得到链接
+    就一定能发 Markdown，图床坏了根本走不到这儿。所以这里既不上传、也不判断图床可用性。
 
-    为什么优先 Markdown：富媒体消息不解析 `<@openid>`，群里多人同时提问时
-    收到一张没头没尾的图，根本对不上是谁问的。
+    为什么要 Markdown 而不是富媒体：富媒体消息（msg_type=7）**不解析 `<@openid>`**，
+    群里多人同时提问时，收到一张没头没尾的图根本对不上是谁问的。
 
-    Markdown 失败的典型原因是**图床域名没在 QQ 开放平台报备**，或上游那次上传
-    没成功、给回来的其实是接口原始链接。这两种都能靠退回富媒体救回来。
+    富媒体只作最后一档兜底 —— 图床域名没报备、图片被风控这类发送侧失败，
+    换个通道还有机会送到。它不是「图床不可用时的退路」，那种情况已经不存在了。
 
     图**单独发一条**，不塞进答案正文：富媒体不渲染引用块，Markdown 消息里
     塞长正文也会把免责声明的格式弄乱。分开发就各归各的。
@@ -853,20 +855,19 @@ async def _deliver_images(event, images: list) -> None:
         url = str(item.get('url') or '')
         if not url:
             continue
-        if hosting.available():
-            try:
-                # skip_suffix：不要在图片消息后面再拼插件签名之类的尾巴
-                response = await event.reply(
-                    _markdown_image(event, item), msg_type=2, skip_suffix=True,
-                    force_verify_image_resource=True,
-                )
-            except Exception as error:  # noqa: BLE001 — 见 docstring
-                response = None
-                log.warning(f'Markdown 图片消息发送异常: {type(error).__name__}: {error}')
-            if _delivered(response):
-                await _bump('draws')
-                continue
-            log.warning(f'Markdown 图片消息未送达，改发富媒体（检查图床域名是否已报备）: {url[:120]}')
+        try:
+            # skip_suffix：不要在图片消息后面再拼插件签名之类的尾巴
+            response = await event.reply(
+                _markdown_image(event, item), msg_type=2, skip_suffix=True,
+                force_verify_image_resource=True,
+            )
+        except Exception as error:  # noqa: BLE001 — 见 docstring
+            response = None
+            log.warning(f'Markdown 图片消息发送异常: {type(error).__name__}: {error}')
+        if _delivered(response):
+            await _bump('draws')
+            continue
+        log.warning(f'Markdown 图片消息未送达，改发富媒体（检查图床域名是否已报备）: {url[:120]}')
         try:
             response = await event.reply_image(url)
         except Exception as error:  # noqa: BLE001 — 见 docstring

@@ -12,7 +12,7 @@ from aiohttp import web
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.web_pages import register_route
 
-from . import central, config, conflict, drawing, games, hosting, ratelimit, sandbox, store
+from . import central, config, conflict, drawing, games, ratelimit, sandbox, store
 
 PREFIX = '/api/ext/lgtbot-qa'
 _registered = False
@@ -72,7 +72,6 @@ def _decorate(current: dict) -> dict:
     value['shared_ai_available'] = central.available()
     value['binding_warning'] = conflict.binding_warning(current)
     value['draw_capability'] = drawing.state()
-    value['hosting'] = hosting.state()
     return value
 
 
