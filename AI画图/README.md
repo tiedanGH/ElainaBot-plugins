@@ -143,16 +143,28 @@ result = await service.call_capability(
 )
 ```
 
-返回值刻意只给链接：
+返回值刻意只给链接与元信息：
 
 ```json
-{"ok": true, "url": "https://图床直链", "model": "dall-e-3",
- "provider": "OpenAI 中转", "size": "1024x1024", "record_id": 42}
+{"ok": true, "url": "https://图床直链",
+ "width": 1024, "height": 1024,
+ "markdown": "![AI画图 #1024px #1024px](https://图床直链)",
+ "model": "dall-e-3", "provider": "OpenAI 中转",
+ "requested_size": "1024x1024", "record_id": 42}
 ```
+
+`width` / `height` 是**实测像素尺寸**（复用插件自己那套不依赖 Pillow 的头部解析），
+不是请求时填的尺寸——请求值另放在 `requested_size` 里，两者对 Gemini 这类模型常常不一致。
+
+`markdown` 是拼好的 QQ Markdown 图片语法，调用方直接 `event.reply(md, msg_type=2)` 即可，
+不用自己再去量宽高。整个返回体约 200 字节。
 
 > ⚠️ **绝不返回 base64**。工具结果会回灌进调用方模型的上下文，一张 1MB 的图
 > 转成 base64 约等于几十万 token，一次就能把上下文撑爆。所以出图后先传图床换成链接；
 > 图床不可用且接口只回二进制时，明确返回 `ok=false` 让调用方知道原因。
+
+只拿到一个下载不到的链接时量不出尺寸，这时 `width` / `height` / `markdown`
+**三个键直接不返回**，而不是给 0 —— 免得调用方拿 0 去拼出坏掉的 Markdown。
 
 调用方约束：
 

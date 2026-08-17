@@ -22,7 +22,8 @@ _DEFINITION = {
     'id': TOOL_ID,
     'name': 'AI 画图',
     'description': (
-        '根据文字描述生成一张图片，返回可直接发送的图片链接。'
+        '根据文字描述生成一张图片，返回图片链接与实测像素宽高（width / height），'
+        '并附一段可直接发送的 QQ Markdown 图片语法（markdown 字段）。'
         '描述要写清主体、动作、场景、风格；不要传入已有图片链接。'
         '图片由 AI 画图插件统一做内容审核与留档，失败时返回 ok=false 与原因。'
     ),
@@ -147,16 +148,28 @@ async def _run(arguments: dict) -> dict:
     except Exception:  # noqa: BLE001 - 留档失败不影响把图给调用方
         log.exception('画图能力留档失败')
         record_id = 0
-    log.info('画图能力出图成功 caller=%s 线路=%s/%s',
-             caller or '未知', result['provider'], result['model'])
-    return {
+    # 实测像素尺寸：QQ 的 Markdown 图片必须写 #宽px #高px，调用方直接拿去用。
+    # 只拿到链接、下不到字节时测不出来，这几个键就不返回，免得 0 被当成真实值。
+    width, height = media.dimensions(image) if image else (0, 0)
+    payload = {
         'ok': True,
         'url': delivered_url,
         'model': result['model'],
         'provider': result['provider'],
-        'size': current['image_size'],
+        'requested_size': current['image_size'],
         'record_id': record_id,
     }
+    if width > 0 and height > 0:
+        payload.update({
+            'width': width,
+            'height': height,
+            # 直接可用的 QQ Markdown 图片语法
+            'markdown': f"![{current['markdown_alt']} #{width}px #{height}px]({delivered_url})",
+        })
+    log.info('画图能力出图成功 caller=%s 线路=%s/%s 尺寸=%s',
+             caller or '未知', result['provider'], result['model'],
+             f'{width}x{height}' if width else '未知')
+    return payload
 
 
 async def handle(capability_id: str, arguments: dict) -> dict:
