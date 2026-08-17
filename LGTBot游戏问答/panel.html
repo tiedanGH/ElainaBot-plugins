@@ -115,7 +115,8 @@ td code{font-size:11px;color:var(--text3)}
       <div><label>单次问答最多画几张</label><input type="number" id="draw_max_per_question"></div>
       <div><label>单次画图超时（秒，0=不限）</label><input type="number" id="draw_timeout_seconds"></div>
     </div>
-    <p class="hint">用的是 <b>AI 画图</b> 插件注册到中央 AI LLM 的共享工具（<code>ai_draw:tool:draw</code>），本插件不含任何生图代码。出图、<b>描述的内容审核</b>、留档、每日额度全部发生在 AI 画图那边，这里只决定要不要把这个工具交给模型。<br>模型只在用户<b>明确要求画图</b>时才会调用它，规则与结算问题照常检索源码作答。图片由本插件单独发一条消息，模型拿不到图片链接，因此不会往回答里贴链接。<br>关掉时工具不会出现在模型的工具清单里（挂着只会让模型反复尝试、白烧轮数，还占输入预算）。</p>
+    <p class="hint" id="draw-hosting"></p>
+    <p class="hint">用的是 <b>AI 画图</b> 插件注册到中央 AI LLM 的共享工具（<code>ai_draw:tool:draw</code>），本插件不含任何生图代码。出图、<b>描述的内容审核</b>、留档、每日额度全部发生在 AI 画图那边，这里只决定要不要把这个工具交给模型。<br>模型只在用户<b>明确要求画图</b>时才会调用它，规则与结算问题照常检索源码作答。<b>要画的东西属于某个游戏时，必须先读到该游戏源码里的真实描述才允许画</b>——凭游戏名想象的调用会被直接拒绝并要求先检索。<br>图片单独发一条消息：图床可用时走 Markdown 图片消息（<code>@发起人</code> 换行后放图，能带提及），否则退回富媒体图片消息。模型拿不到图片链接，因此不会往回答里贴链接。<br>关掉时工具不会出现在模型的工具清单里（挂着只会让模型反复尝试、白烧轮数，还占输入预算）。</p>
   </div>
 
   <div class="card">
@@ -317,6 +318,9 @@ function renderDrawState() {
   // 只有「开了却用不了」才标红：没开的时候用不了是正常的，不该吓人
   // 读复选框而不是 state：勾了还没保存时也要立刻看到「这条路通不通」
   el.style.color = ($('draw_enabled').checked && !info.usable) ? 'var(--danger)' : 'var(--text3)';
+  const bed = state.hosting || {};
+  $('draw-hosting').innerHTML = '<b>投递方式：</b>' + (bed.message || '') +
+    (bed.available ? '' : '（富媒体消息无法解析 <code>&lt;@用户&gt;</code>，群里多人同时提问会对不上号）');
 }
 
 function collect() {

@@ -38,6 +38,8 @@ TOOL_SCHEMA = {
         'description': (
             '生成一张图片。**只有用户明确要求画图、生成图片、做张图时才调用**；'
             '规则、机制、计分、结算类问题一律用检索工具回答，不要配图。'
+            '**要画的东西属于某个游戏时，必须先用 read_game_source / read_game_rule '
+            '读到它在该游戏里的真实描述，再据此写画面描述** —— 凭游戏名想象会被拒绝。'
             '描述要写清主体、动作、场景、风格，越具体越好，不要传入任何链接。'
             '图片会由机器人自动发送给用户，你拿不到也不需要图片链接 —— '
             '回答里不要写链接、不要写 Markdown 图片语法。每次回答最多调用一次。'
@@ -131,20 +133,24 @@ def state() -> dict:
     return {'installed': True, 'usable': True, 'message': f'{name}能力已就绪，可供模型调用'}
 
 
-def detach_url(result: dict) -> str:
-    """把图片链接从**回灌给模型**的结果里摘出来。
+def detach_image(result: dict) -> dict:
+    """把图片链接与尺寸从**回灌给模型**的结果里摘出来。
 
     刻意不让模型看到链接：它拿到就会往答案里贴，而 QQ 那边裸链接会被风控、
-    Markdown 图片语法也渲染不出来，最后用户只看到一串乱码般的 URL。
-    图片由插件自己 reply_image 发送，模型只需要知道「画好了」。
+    Markdown 图片语法在普通文本消息里也渲染不出来，最后用户只看到一串 URL。
+    图片由插件自己发一条消息，模型只需要知道「画好了」。
+
+    返回 {} 表示这次没出图。
     """
     if not isinstance(result, dict):
-        return ''
+        return {}
     url = str(result.pop('url', '') or '')
+    size = str(result.pop('size', '') or '')
     result.pop('record_id', None)
-    if result.get('ok'):
-        result['note'] = '图片已生成，机器人会自动发给用户。直接用一句话回应即可，不要写链接。'
-    return url
+    if not (result.get('ok') and url):
+        return {}
+    result['note'] = '图片已生成，机器人会自动发给用户。直接用一句话回应即可，不要写链接。'
+    return {'url': url, 'size': size}
 
 
 async def run(arguments: dict, current: dict) -> dict:
@@ -189,4 +195,10 @@ async def run(arguments: dict, current: dict) -> dict:
     if not url:
         return {'ok': False, 'error': '画图成功但没有拿到图片链接'}
     log.info(f'画图完成（{result.get("model") or "未知模型"}）')
-    return {'ok': True, 'url': url, 'model': str(result.get('model') or '')}
+    # size 是 AI 画图配置的出图尺寸（如 1024x1024）。留着给 Markdown 图片消息用 ——
+    # QQ 的 `![alt #宽px #高px](url)` 要这两个数，有真实值就不用瞎猜。
+    return {
+        'ok': True, 'url': url,
+        'model': str(result.get('model') or ''),
+        'size': str(result.get('size') or ''),
+    }

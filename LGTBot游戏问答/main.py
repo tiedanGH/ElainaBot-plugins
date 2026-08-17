@@ -30,15 +30,15 @@ from core.plugin.decorators import handler, on_load, on_unload
 from core.plugin.web_pages import register_page, unregister_page
 
 from .app import (
-    central, config, conflict, drawing, games, ratelimit, safety, sandbox, store, tools,
-    webpanel,
+    central, config, conflict, drawing, games, hosting, ratelimit, safety, sandbox, store,
+    tools, webpanel,
 )
 
 __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.9.0',
+    'version': '1.9.1',
     'license': 'MIT',
 }
 
@@ -421,6 +421,34 @@ def _needs_source(question: str, current: dict) -> bool:
     return _mentions_game(question, current)
 
 
+# 画图前必须先读源码时给模型的指令。措辞要能直接指导下一步动作 ——
+# 只说「不行」，模型往往就放弃画图去写一段文字解释了。
+_DRAW_SOURCE_FIRST = (
+    '这个画图请求牵涉到具体游戏，不能凭游戏名想象。请先用 read_game_source'
+    '（或 read_game_rule）读到该游戏里角色、场景、道具、棋盘的**真实描述**，'
+    '再把读到的具体特征写进画面描述，重新调用画图。'
+)
+
+
+def _draw_needs_source(question: str, arguments: dict, current: dict, used: set) -> str:
+    """画图之前是否必须先检索源码。返回空串表示可以直接画。
+
+    判据只有一条：**这次请求点到了索引里真实存在的游戏**。点到了就必须先读内容，
+    否则模型只能按游戏名去脑补角色长什么样、棋盘是什么样子 —— 画出来跟游戏毫无
+    关系，而用户要的恰恰是「这个游戏里的东西」。
+
+    与接地闸同源：数据驱动，不写死任何游戏名。问题里没点游戏的（画只猫、画个风景）
+    照常直接画，不平白多绕一轮。
+
+    连模型自己填的 prompt 一起看：追问式的「画一张这个游戏的插画」问题里没有游戏名，
+    但模型展开后的描述里通常有。
+    """
+    if used & _CONTENT_TOOLS:
+        return ''
+    text = f'{question} {(arguments or {}).get("prompt") or ""}'
+    return _DRAW_SOURCE_FIRST if _mentions_game(text, current) else ''
+
+
 def _collect_paths(name: str, result, seen: set) -> None:
     """把工具真实返回过的路径收进 seen，用于事后核对模型给的出处。"""
     if not isinstance(result, dict) or not result.get('ok'):
@@ -758,28 +786,90 @@ def _with_disclaimer(answer: str, current: dict) -> str:
     return f'{text}\n\n{note}'
 
 
-async def _deliver_images(event, urls: list) -> None:
+# Markdown 图片消息里的 alt。QQ 的写法是 `![alt #宽px #高px](url)`，
+# alt 里不能出现方括号，否则整条语法被破坏。
+_IMAGE_ALT = '画图结果'
+_SIZE_RE = re.compile(r'^\s*(\d{2,5})\s*[x×*]\s*(\d{2,5})\s*$', re.IGNORECASE)
+
+
+def _pixel_size(size: str) -> tuple:
+    """把 AI 画图给的 `1024x1024` 解析成 (宽, 高)。
+
+    解析不出来就按 1024 见方走：这两个数只是给客户端排版的提示，
+    宽高比不准最多显示时略有拉伸，不该为它拦下一张已经画好的图。
+    """
+    match = _SIZE_RE.match(str(size or ''))
+    if not match:
+        return 1024, 1024
+    return int(match.group(1)), int(match.group(2))
+
+
+def _markdown_image(event, item: dict) -> str:
+    """@发起人 + 换行 + 图片的 Markdown 消息（与 AI 画图同一套写法）。
+
+    富媒体图片消息（msg_type=7）**不解析** `<@openid>`，群里多人同时问就对不上号；
+    Markdown 图片消息能带 @，所以图床可用时优先走这条。
+    """
+    width, height = _pixel_size(item.get('size', ''))
+    body = f'![{_IMAGE_ALT} #{width}px #{height}px]({item["url"]})'
+    if getattr(event, 'is_group', False) or getattr(event, 'is_channel', False):
+        return f'<@{event.user_id}>\n{body}'
+    return body
+
+
+def _delivered(response) -> bool:
+    """平台失败时框架也可能**不抛异常**，只返回 None 或不带消息 ID 的响应体
+    （图片下不动、格式不认、域名没报备、被风控都是这样）。
+    光看有没有异常会把失败记成成功，也就不会触发退回富媒体。
+    """
+    return isinstance(response, dict) and bool(response.get('id'))
+
+
+async def _deliver_images(event, images: list) -> None:
     """把这一轮画出来的图发给用户。逐张出队，重复调用不会重发。
 
-    图**单独发一条**，不塞进正文：QQ 的富媒体消息（msg_type=7）不解析
-    `<@openid>`，也不渲染引用块，把答案正文塞进去会连 @提问人 和免责声明一起废掉。
-    分开发就各归各的 —— 文字照常走 markdown，图片走图片通道。
+    两条投递路线，与 AI 画图一致：
 
-    发送顺序在文字之后：正常情况下模型那句「按你的描述画好了」先到，图跟在后面。
+      1. 图床可用 → Markdown 图片消息：`<@发起人>` 换行 `![alt #宽px #高px](链接)`
+      2. 图床不可用、或 Markdown 没送达 → 富媒体图片消息（`reply_image`）
 
-    全程吞异常：图已经画出来了（额度也扣过了），发不出去顶多少一张图，
+    为什么优先 Markdown：富媒体消息不解析 `<@openid>`，群里多人同时提问时
+    收到一张没头没尾的图，根本对不上是谁问的。
+
+    Markdown 失败的典型原因是**图床域名没在 QQ 开放平台报备**，或上游那次上传
+    没成功、给回来的其实是接口原始链接。这两种都能靠退回富媒体救回来。
+
+    图**单独发一条**，不塞进答案正文：富媒体不渲染引用块，Markdown 消息里
+    塞长正文也会把免责声明的格式弄乱。分开发就各归各的。
+
+    全程吞异常：图已经画出来了（对方额度也扣过了），发不出去顶多少一张图，
     绝不能让它把整轮问答带崩 —— 那样用户连文字回复都收不到。
     """
-    while urls:
-        url = urls.pop(0)
+    for item in list(images):
+        images.remove(item)
+        url = str(item.get('url') or '')
+        if not url:
+            continue
+        if hosting.available():
+            try:
+                # skip_suffix：不要在图片消息后面再拼插件签名之类的尾巴
+                response = await event.reply(
+                    _markdown_image(event, item), msg_type=2, skip_suffix=True,
+                    force_verify_image_resource=True,
+                )
+            except Exception as error:  # noqa: BLE001 — 见 docstring
+                response = None
+                log.warning(f'Markdown 图片消息发送异常: {type(error).__name__}: {error}')
+            if _delivered(response):
+                await _bump('draws')
+                continue
+            log.warning(f'Markdown 图片消息未送达，改发富媒体（检查图床域名是否已报备）: {url[:120]}')
         try:
             response = await event.reply_image(url)
         except Exception as error:  # noqa: BLE001 — 见 docstring
             log.warning(f'画图结果发送失败: {type(error).__name__}: {error}')
             continue
-        # 平台失败时框架也可能**不抛异常**，只返回 None 或不带消息 ID 的响应体
-        # （图片下不动、格式不认、被风控都是这样）。光看有没有异常会把失败记成成功。
-        if not (isinstance(response, dict) and response.get('id')):
+        if not _delivered(response):
             log.warning(f'画图结果未能送达（平台未返回消息 ID）: {url[:120]}')
             continue
         # 统计放在这里而不是成功路径里：无论这一轮问答最终成功还是报错，
@@ -864,6 +954,13 @@ async def _answer(event, question: str) -> None:
         nonlocal tool_calls, spent, draws
         tool_calls += 1
         if str(name) == drawing.TOOL_NAME:
+            # 牵涉具体游戏的画图，必须先把游戏内容读出来 —— 挡在这里而不是只写进
+            # 提示词：提示词能被无视，这道闸不能。挡下来不算一次画图额度。
+            hold = _draw_needs_source(question, arguments, current, used_tools)
+            if hold:
+                used_tools.add(str(name))
+                log.info('画图请求牵涉具体游戏，要求先检索源码')
+                return {'ok': False, 'error': hold}
             # 单次问答的画图次数上限。模型可以在 max_tool_rounds 轮里反复调用，
             # 不在这儿卡死的话，一个提问就能把 AI 画图的日额度掏空、并连发十条图。
             cap = int(current.get('draw_max_per_question') or 1)
@@ -874,10 +971,10 @@ async def _answer(event, question: str) -> None:
         result = await tools.run(name, arguments, current)
         used_tools.add(str(name))
         if str(name) == drawing.TOOL_NAME:
-            # 链接摘出来自己发，不回灌给模型（理由见 drawing.detach_url）
-            url = drawing.detach_url(result)
-            if url:
-                drawn.append(url)
+            # 链接摘出来自己发，不回灌给模型（理由见 drawing.detach_image）
+            image = drawing.detach_image(result)
+            if image:
+                drawn.append(image)
             else:
                 draws -= 1   # 没出图就不占额度，让模型换个描述还能再试
             # 结果只剩一句话，占不了多少，但仍要计进预算 —— 漏算就等于给 413 让路。
