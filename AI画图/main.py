@@ -16,7 +16,7 @@ __plugin_meta__ = {
     'name': 'AI 画图',
     'author': '铁蛋',
     'description': '所有人可用的「画图 XXX」指令，调用中央 AI LLM 生图，并提供配置与历史记录面板',
-    'version': '1.0.2',
+    'version': '1.1.0',
     'license': 'MIT',
 }
 
@@ -180,8 +180,16 @@ async def _image_bytes(result: dict) -> bytes:
 
 
 async def _deliver(event, current: dict, caption: str, result: dict, image: bytes) -> dict:
-    """优先图床直链 + Markdown 图片消息，失败时退回富媒体图片消息。"""
-    outcome = {'send_mode': '', 'hosted_url': '', 'delivered': False, 'error': ''}
+    """优先图床直链 + Markdown 图片消息，失败时退回富媒体图片消息。
+
+    `retryable` 表示「这条线路给的图有问题，换一条可能就好了」：图片下不下来、
+    图床收不下、平台拉不动这张图，都属于这类。唯独「图床上传成功、Markdown 却被
+    平台拒收」不算 —— 那是图床域名没报备，换线路还是同一个域名，重试纯属浪费额度。
+    """
+    outcome = {
+        'send_mode': '', 'hosted_url': '', 'delivered': False,
+        'error': '', 'retryable': False,
+    }
     if current['markdown_send'] and image:
         extension = media.sniff(image)[0]
         url = await hosting.upload(
@@ -207,21 +215,81 @@ async def _deliver(event, current: dict, caption: str, result: dict, image: byte
             outcome['error'] = 'Markdown 图片消息发送失败，请确认图床域名已在 QQ 开放平台报备'
         else:
             outcome['error'] = hosting.state()['message']
+            outcome['retryable'] = True
         if not current['media_fallback']:
             return outcome
 
     payload = image or result.get('url', '')
     if not payload:
-        outcome['error'] = outcome['error'] or '没有可发送的图片内容'
+        outcome['error'] = '生图接口返回的图片既下载不到也没有可用链接'
+        outcome['retryable'] = True
         return outcome
     response = await event.reply_image(payload, _media_content(event, current, caption))
     outcome['send_mode'] = 'media'
     outcome['delivered'] = _delivered(response)
-    if not outcome['delivered']:
-        outcome['error'] = outcome['error'] or '图片发送失败，请检查图片格式或平台限制'
-    else:
+    if outcome['delivered']:
         outcome['error'] = ''
+        outcome['retryable'] = False
+    else:
+        outcome['error'] = outcome['error'] or '图片发送失败，请检查图片格式或平台限制'
+        outcome['retryable'] = True
     return outcome
+
+
+async def _generate_and_deliver(event, current: dict, prompt: str, final_prompt: str,
+                                record: dict) -> bytes:
+    """按线路依次生图并投递；生成成功却没送达时换下一条线路重试。"""
+    tried: set[tuple[str, str]] = set()
+    routes = len(central.valid_routes(current))
+    attempts = max(1, min(int(current['delivery_max_attempts']), routes or 1))
+    notes: list[str] = []
+    image = b''
+    for index in range(attempts):
+        try:
+            async with limiter.semaphore(current['max_concurrency']):
+                result = await central.generate(current, final_prompt, exclude=tried)
+        except Exception as error:  # noqa: BLE001 - 线路耗尽时保留前几次的失败原因
+            if not notes:
+                raise
+            notes.append(str(error)[:300])
+            break
+        tried.add((result['provider_id'], result['model']))
+        record.update({
+            'status': 'success',
+            'provider': result['provider'],
+            'provider_id': result['provider_id'],
+            'model': result['model'],
+            'size': current['image_size'],
+            'image_url': result['url'],
+        })
+        image = await _image_bytes(result)
+        try:
+            outcome = await _deliver(
+                event, current, _caption(current, event, prompt, result), result, image,
+            )
+        except Exception as error:  # noqa: BLE001 - 发送炸了也按未送达处理，换线路再试
+            report_error(PLUGIN, 'AI画图', error)
+            outcome = {
+                'send_mode': '', 'hosted_url': '', 'delivered': False,
+                'error': f'图片发送异常：{error}'[:300], 'retryable': True,
+            }
+        record.update({
+            'delivered': outcome['delivered'],
+            'send_mode': outcome['send_mode'],
+            'hosted_url': outcome['hosted_url'],
+            'error': outcome['error'],
+        })
+        if outcome['delivered']:
+            if notes:
+                record['error'] = '已改用备用线路；先前失败：' + '；'.join(notes)[:800]
+            return image
+        notes.append(f"{result['provider'] or result['provider_id']}/{result['model']}: "
+                     f"{outcome['error']}")
+        if not outcome['retryable'] or index + 1 >= attempts:
+            break
+        log.warning('AI 画图生成成功但未送达，切换下一条线路重试: %s', notes[-1])
+    record['error'] = '；'.join(notes)[:1000]
+    return image
 
 
 @handler(
@@ -242,7 +310,7 @@ async def draw_help(event, _match) -> None:
     routes = central.valid_routes(current)
     await _reply_text(
         event,
-        '【AI 画图】\n'
+        '\n【AI 画图】\n'
         f"发送「画图 <画面描述>」即可生成图片（最多 {current['input_max_length']} 字）\n"
         '例：画图 雪山下的湖泊，黄昏，写实摄影\n'
         f"当前尺寸：{current['image_size']}\n"
@@ -322,46 +390,22 @@ async def draw_command(event, match) -> None:
 
     if current['notice_enabled']:
         await _reply_text(event, current['notice_text'], current)
+    image = b''
     try:
         optimized = await central.optimize_prompt(current, prompt)
         final_prompt = central.build_prompt(current, optimized)
         record['final_prompt'] = final_prompt
-        async with limiter.semaphore(current['max_concurrency']):
-            result = await central.generate(current, final_prompt)
+        image = await _generate_and_deliver(event, current, prompt, final_prompt, record)
     except Exception as error:  # noqa: BLE001 - 统一记录并回复友好文案
         record.update({
-            'status': 'failed',
+            'status': record.get('status', 'failed'),
             'error': str(error)[:1000],
-            'duration_ms': round((time.perf_counter() - started) * 1000),
         })
-        await _persist(record, current)
-        log.warning('AI 画图失败: %s', error)
-        await _reply_text(event, current['failure_message'], current)
-        return
-
-    record.update({
-        'status': 'success',
-        'duration_ms': round((time.perf_counter() - started) * 1000),
-        'provider': result['provider'],
-        'provider_id': result['provider_id'],
-        'model': result['model'],
-        'size': current['image_size'],
-        'image_url': result['url'],
-    })
-    image = await _image_bytes(result)
-    try:
-        outcome = await _deliver(
-            event, current, _caption(current, event, prompt, result), result, image,
-        )
-        record.update({
-            'delivered': outcome['delivered'],
-            'send_mode': outcome['send_mode'],
-            'hosted_url': outcome['hosted_url'],
-            'error': outcome['error'],
-        })
-    except Exception as error:  # noqa: BLE001 - 发送失败仍要保留生成记录
-        record['error'] = f'图片发送异常：{error}'[:1000]
-        report_error(PLUGIN, 'AI画图', error)
+        if record['status'] != 'success':
+            log.warning('AI 画图失败: %s', error)
+        else:
+            report_error(PLUGIN, 'AI画图', error)
+    record['duration_ms'] = round((time.perf_counter() - started) * 1000)
     await _persist(record, current, image if current['history_save_images'] else b'')
     if not record.get('delivered'):
         log.warning('AI 画图发送失败: %s', record.get('error', ''))

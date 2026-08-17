@@ -34,6 +34,7 @@ DEFAULT_CONFIG = {
     # 生图线路
     'image_routes': [],
     'image_size': '1024x1024',
+    'delivery_max_attempts': 2,
     # 提示词
     'prompt_optimize_enabled': True,
     'prompt_provider_id': '',
@@ -190,6 +191,7 @@ def validate(value: dict) -> dict:
         })
         seen.add(key)
     value['image_routes'] = normalized
+    value['delivery_max_attempts'] = _int_in(value.get('delivery_max_attempts'), 2, 1, 5)
 
     value['prompt_provider_id'] = str(value.get('prompt_provider_id') or '').strip()[:128]
     value['prompt_model'] = str(value.get('prompt_model') or '').strip()[:256]

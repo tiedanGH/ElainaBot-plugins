@@ -218,16 +218,26 @@ def build_prompt(config: dict, text: str) -> str:
     return prompt[:max(50, int(config.get('prompt_max_length', 1200)))]
 
 
-async def generate(config: dict, prompt: str) -> dict:
-    """调用中央生图能力；返回 {data, url, provider, provider_id, model}。"""
+async def generate(config: dict, prompt: str, *, exclude=()) -> dict:
+    """调用中央生图能力；返回 {data, url, provider, provider_id, model}。
+
+    `exclude` 传入已经试过的 (provider_id, model)，用于投递失败后换下一条线路重试。
+    """
     service = get_service()
     if service is None:
         raise RuntimeError(status()['message'])
     if not hasattr(service, 'generate_image'):
         raise RuntimeError('当前 AI LLM 模块版本不支持生图接口')
-    routes = valid_routes(config)
+    skipped = {tuple(item) for item in (exclude or ())}
+    routes = [
+        item for item in valid_routes(config)
+        if (item['provider_id'], item['model']) not in skipped
+    ]
     if not routes:
-        raise RuntimeError('没有可用的生图线路，请先在面板中配置接口与模型')
+        raise RuntimeError(
+            '其余生图线路都已试过，仍未能把图片送达' if skipped
+            else '没有可用的生图线路，请先在面板中配置接口与模型'
+        )
     result = await service.generate_image(
         prompt,
         candidates=routes,
