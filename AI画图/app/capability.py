@@ -48,12 +48,17 @@ _DEFINITION = {
 }
 
 
-def _fail(reason: str, record: dict | None = None, current: dict | None = None) -> dict:
-    """统一失败返回；需要留档时顺带写一条记录。"""
+def _fail(reason: str, record: dict | None = None, current: dict | None = None,
+          image: bytes = b'') -> dict:
+    """统一失败返回；需要留档时顺带写一条记录，有图就一并留下便于排查。"""
     if record is not None and current is not None:
         record['error'] = reason[:1000]
         try:
-            store.add(record, current['history_limit'])
+            record_id = store.add(record, current['history_limit'])
+            if image and current.get('history_save_images'):
+                store.save_image(
+                    record_id, image, media.sniff(image)[0], current['history_image_limit'],
+                )
         except Exception:  # noqa: BLE001 - 留档失败不该影响返回
             log.exception('画图能力留档失败')
     return {'ok': False, 'error': reason}
@@ -106,47 +111,73 @@ async def _run(arguments: dict) -> dict:
         return _fail(review.get('error') or '描述未通过内容审核', record, current)
 
     log.info('画图能力被调用 caller=%s 描述=%s', caller or '未知', prompt[:60])
-    try:
-        optimized = await central.optimize_prompt(current, prompt)
-        final_prompt = central.build_prompt(current, optimized)
-        record['final_prompt'] = final_prompt
-        async with limiter.semaphore(current['max_concurrency']):
-            result = await central.generate(current, final_prompt)
-    except Exception as error:  # noqa: BLE001 - 失败原因原样回给调用方
-        record['duration_ms'] = round((time.perf_counter() - started) * 1000)
-        log.warning('画图能力生图失败 caller=%s: %s', caller or '未知', error)
-        return _fail(str(error)[:500], record, current)
+    optimized = await central.optimize_prompt(current, prompt)
+    final_prompt = central.build_prompt(current, optimized)
+    record['final_prompt'] = final_prompt
 
-    record.update({
-        'status': 'success',
-        'duration_ms': round((time.perf_counter() - started) * 1000),
-        'provider': result['provider'], 'provider_id': result['provider_id'],
-        'model': result['model'], 'size': current['image_size'],
-        'image_url': result['url'],
-    })
     # 工具返回的链接**必须**是自己图床的直链：AI 接口的原始域名没在 QQ 开放平台
-    # 报备，调用方拿去发 Markdown 图片会被拦下来不显示。所以先落到本地字节、
-    # 再上传图床；任一步拿不到就直接失败，绝不把接口链接当结果糊弄过去。
-    image = result['data'] or (await media.download(result['url']) or b'')
-    if not image:
-        return _fail(
-            '拿不到图片内容：接口只给了一个服务器下载不到的链接，无法转上图床。'
-            '这条线路对外调用不可用',
-            record, current,
+    # 报备，调用方拿去发 Markdown 图片会被拦下来不显示。所以每条线路都要走完
+    # 「出图 → 拿到字节 → 传图床」，中间任何一步掉链子就换下一条线路重来，
+    # 与聊天指令的故障转移同一套逻辑，不能只试一条就放弃。
+    routes = central.valid_routes(current)
+    attempts = max(1, min(int(current['delivery_max_attempts']), len(routes) or 1))
+    tried: set[tuple[str, str]] = set()
+    notes: list[str] = []
+    result = None
+    image = b''
+    hosted_url = ''
+    for index in range(attempts):
+        try:
+            async with limiter.semaphore(current['max_concurrency']):
+                attempt = await central.generate(current, final_prompt, exclude=tried)
+        except Exception as error:  # noqa: BLE001 - 线路耗尽或全部报错
+            notes.append(str(error)[:400])
+            log.warning('画图能力生图失败 caller=%s: %s', caller or '未知', error)
+            break
+        tried.add((attempt['provider_id'], attempt['model']))
+        result = attempt
+        label = f"{attempt['provider'] or attempt['provider_id']}/{attempt['model']}"
+        record.update({
+            'status': 'success',
+            'provider': attempt['provider'], 'provider_id': attempt['provider_id'],
+            'model': attempt['model'], 'size': current['image_size'],
+            'image_url': attempt['url'],
+        })
+        candidate = attempt['data'] or (await media.download(attempt['url']) or b'')
+        if not candidate:
+            notes.append(f'{label}: 接口只给了服务器下载不到的链接，拿不到图片内容')
+            log.warning('画图能力换下一条线路重试：%s', notes[-1])
+            continue
+        image = candidate
+        if not hosting.available():
+            # 压根没有可用图床，换线路拿到的还是同一个图床，重试纯属浪费额度。
+            notes.append(f"没有可用图床（{hosting.state()['message']}），换线路也无济于事")
+            break
+        hosted_url = await hosting.upload(
+            image, f'ai-draw-{int(time.time() * 1000)}.{media.sniff(image)[0]}',
         )
-    hosted_url = await hosting.upload(
-        image, f'ai-draw-{int(time.time() * 1000)}.{media.sniff(image)[0]}',
-    )
+        if hosted_url:
+            break
+        # 图床活着却收不下这张图（格式/体积），换条线路换张图还有机会。
+        notes.append(f'{label}: 图床上传失败')
+        log.warning('画图能力换下一条线路重试：%s', notes[-1])
+        if index + 1 >= attempts:
+            break
+
+    record['duration_ms'] = round((time.perf_counter() - started) * 1000)
+    if result is None:
+        return _fail('；'.join(notes)[:500] or '没有可用的生图线路', record, current)
     record['hosted_url'] = hosted_url
     if not hosted_url:
         return _fail(
-            f"图床上传失败（{hosting.state()['message']}）。"
-            '不返回接口原始链接：那个域名未在 QQ 开放平台报备，发出去图片不会显示。'
-            '请在 Image Hosting 模块中配置可用图床',
-            record, current,
+            '；'.join(notes)[:400]
+            + '。不返回接口原始链接：那个域名未在 QQ 开放平台报备，发出去图片不会显示',
+            record, current, image,
         )
     delivered_url = hosted_url
     record['delivered'] = 1
+    if notes:
+        record['error'] = '已改用备用线路；先前失败：' + '；'.join(notes)[:800]
     try:
         record_id = store.add(record, current['history_limit'])
         if image and current['history_save_images']:
