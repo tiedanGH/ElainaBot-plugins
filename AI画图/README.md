@@ -92,6 +92,11 @@ or /v1/images/edits. Use gpt-image-2, grok-imagine-image, ...
 data URI → Markdown 图片链接 → 裸图片链接。`size` 对这类模型无效（Gemini 用 aspectRatio），
 需要特定比例就写进提示词。
 
+**不改开关也能自愈**：线路仍设为「生图端点」时，只要中转明确回「该模型不在
+`/v1/images/generations` 上」，插件会自动改走对话端点重试一次，不用人工干预。
+普通报错（500、429 等）不会触发这个回退，免得白烧一次额度。
+面板试跑的故障日志里会标出每条线路**实际用的端点**。
+
 ### ⚠️ 两条已知限制
 
 中央模块的 `complete()` 只把 `message.content` 当文本交回来，所以：

@@ -163,7 +163,9 @@ async def _try_route(current: dict, prompt: str, route: dict, routes: list[dict]
     step = {
         'provider_id': route['provider_id'],
         'provider': central.provider_name(route['provider_id']),
-        'model': route['model'], 'ok': False, 'ms': 0, 'error': '', 'note': '',
+        'model': route['model'],
+        'mode': '对话端点' if route.get('mode') == 'chat' else '生图端点',
+        'ok': False, 'ms': 0, 'error': '', 'note': '',
     }
     started = time.perf_counter()
     try:

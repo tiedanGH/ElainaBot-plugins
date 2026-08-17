@@ -6,8 +6,11 @@ import binascii
 import json
 import re
 
+from core.base.logger import PLUGIN, get_logger
+
 from . import config as draw_config
 
+log = get_logger(PLUGIN, 'AI画图')
 CONSUMER = 'ai_draw'
 _MODERATION_SAFE = '安全'
 _MODERATION_BLOCKED = '内容违规，已禁止发送'
@@ -18,6 +21,12 @@ _DATA_URI = re.compile(r'data:image/([A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]{3
 _MARKDOWN_IMAGE = re.compile(r'!\[[^\]]*\]\(\s*(\S+?)\s*\)')
 _BARE_URL = re.compile(r'https?://\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?', re.IGNORECASE)
 _CHAT_IMAGE_MAX_TOKENS = 65536
+# 中转明确回「这个模型不在 images 端点上」时，不必等管理员去面板改开关，直接改走对话端点。
+_IMAGES_ENDPOINT_REJECTED = re.compile(
+    r'(?:not\s+supported|unsupported|does\s+not\s+support|不支持)[^\n]{0,120}?images?/(?:generations|edits)'
+    r'|images?/(?:generations|edits)[^\n]{0,120}?(?:not\s+supported|unsupported|不支持)',
+    re.IGNORECASE,
+)
 
 
 def _raw_service():
@@ -348,11 +357,22 @@ async def generate(config: dict, prompt: str, *, exclude=()) -> dict:
         )
     errors = []
     for route in routes:
-        runner = _chat_image if route.get('mode') == 'chat' else _images_endpoint
+        label = f"{provider_name(route['provider_id'])}/{route['model']}"
+        chat_mode = route.get('mode') == 'chat'
         try:
-            return await runner(config, prompt, route)
+            if chat_mode:
+                return await _chat_image(config, prompt, route)
+            return await _images_endpoint(config, prompt, route)
         except Exception as error:  # noqa: BLE001 - 逐条线路汇总，最后统一上抛
-            errors.append(
-                f"{provider_name(route['provider_id'])}/{route['model']}: {error}"
-            )
+            if chat_mode or not _IMAGES_ENDPOINT_REJECTED.search(str(error)):
+                errors.append(f'{label}: {error}')
+                continue
+            # 中转明说这个模型不在生图端点上（Gemini 这类多模态模型），自动改走对话端点。
+            log.info('%s 不在生图端点上，自动改走对话端点重试', label)
+            try:
+                return await _chat_image(config, prompt, route)
+            except Exception as retry_error:  # noqa: BLE001 - 两次都失败就一起报出来
+                errors.append(
+                    f'{label}: 生图端点不支持该模型，自动改走对话端点后仍失败：{retry_error}'
+                )
     raise RuntimeError('；'.join(errors)[:1200])
