@@ -111,6 +111,7 @@ async def _records(request: web.Request) -> web.Response:
         keyword=str(query.get('keyword') or '')[:100],
         user_id=str(query.get('user_id') or '')[:80],
         chat_id=str(query.get('chat_id') or '')[:120],
+        model=str(query.get('model') or '')[:256],
         with_image=str(query.get('with_image') or '') in {'1', 'true'},
         limit=limit,
         offset=offset,

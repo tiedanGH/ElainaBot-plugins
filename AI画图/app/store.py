@@ -224,6 +224,18 @@ def _prune_images(image_limit: int) -> None:
     _remove_files(row['image_file'] for row in rows)
 
 
+def models(limit: int = 200) -> list[dict]:
+    """画廊里出现过的模型及其出图数，供历史筛选下拉使用。"""
+    with _lock:
+        rows = _conn().execute(
+            "SELECT model, COUNT(*) AS total FROM records WHERE model<>'' "
+            "AND (image_file<>'' OR hosted_url<>'' OR image_url<>'') "
+            'GROUP BY model ORDER BY total DESC, model LIMIT ?',
+            (max(1, min(500, int(limit))),),
+        ).fetchall()
+    return [{'model': row['model'], 'total': int(row['total'])} for row in rows]
+
+
 def image_usage() -> dict:
     """统计 data/images 的实际占用；按目录实测，包含未被记录引用的残留文件。"""
     if not _image_dir or not os.path.isdir(_image_dir):
@@ -255,7 +267,7 @@ def get(record_id: int) -> dict | None:
 
 def query(
     *, status: str = '', keyword: str = '', user_id: str = '', chat_id: str = '',
-    with_image: bool = False, limit: int = 50, offset: int = 0,
+    model: str = '', with_image: bool = False, limit: int = 50, offset: int = 0,
 ) -> dict:
     """分页查询历史记录，供画廊与日志页共用。"""
     where = ['1=1']
@@ -271,6 +283,10 @@ def query(
     if chat_id:
         where.append('chat_id=?')
         params.append(str(chat_id))
+    wanted_model = str(model or '').strip()[:256]
+    if wanted_model:
+        where.append('model=?')
+        params.append(wanted_model)
     if with_image:
         where.append("(image_file<>'' OR hosted_url<>'' OR image_url<>'')")
     value = str(keyword or '').strip()
@@ -327,6 +343,7 @@ def stats(day_start: float) -> dict:
         ).fetchone()[0]
     usage = image_usage()
     return {
+        'models': models(),
         'total': int(row['total'] or 0),
         'success': int(row['success'] or 0),
         'failed': int(row['failed'] or 0),
