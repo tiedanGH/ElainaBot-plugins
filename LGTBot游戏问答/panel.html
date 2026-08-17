@@ -109,6 +109,16 @@ td code{font-size:11px;color:var(--text3)}
   </div>
 
   <div class="card">
+    <h2>画图 <small id="draw-state"></small></h2>
+    <div class="row"><input type="checkbox" id="draw_enabled"><span>允许模型调用「AI 画图」的出图能力</span></div>
+    <div class="grid" style="margin-top:8px">
+      <div><label>单次问答最多画几张</label><input type="number" id="draw_max_per_question"></div>
+      <div><label>单次画图超时（秒，0=不限）</label><input type="number" id="draw_timeout_seconds"></div>
+    </div>
+    <p class="hint">用的是 <b>AI 画图</b> 插件注册到中央 AI LLM 的共享工具（<code>ai_draw:tool:draw</code>），本插件不含任何生图代码。出图、<b>描述的内容审核</b>、留档、每日额度全部发生在 AI 画图那边，这里只决定要不要把这个工具交给模型。<br>模型只在用户<b>明确要求画图</b>时才会调用它，规则与结算问题照常检索源码作答。图片由本插件单独发一条消息，模型拿不到图片链接，因此不会往回答里贴链接。<br>关掉时工具不会出现在模型的工具清单里（挂着只会让模型反复尝试、白烧轮数，还占输入预算）。</p>
+  </div>
+
+  <div class="card">
     <h2>限额</h2>
     <div class="grid">
       <div><label>冷却（秒 / 人）</label><input type="number" id="cooldown_seconds"></div>
@@ -188,8 +198,10 @@ td code{font-size:11px;color:var(--text3)}
         <option value="search_code">search_code</option>
         <option value="read_file">read_file</option>
         <option value="list_dir">list_dir</option>
+        <option value="draw_image">draw_image（会真的出图）</option>
       </select></div>
       <div><label>参数（JSON）</label><input type="text" id="probe-args" value="{}"></div>
+      <p class="hint" style="grid-column:1/-1">选 <code>draw_image</code> 会<b>真的画一张图</b>并消耗 AI 画图的额度（参数如 <code>{"prompt": "一只坐在窗台上的橘猫"}</code>）；这里会直接显示图片链接，图不会发到群里。</p>
     </div>
     <div class="bar"><button class="btn" id="probe">执行</button></div>
     <pre id="probe-out" style="display:none"></pre>
@@ -203,11 +215,12 @@ const $ = id => document.getElementById(id);
 let state = {};
 
 const BOOLS = ['enabled','group_enabled','direct_enabled','owner_unlimited',
-  'moderation_enabled','moderation_fail_closed','error_detail_enabled','block_others'];
+  'moderation_enabled','moderation_fail_closed','error_detail_enabled','block_others',
+  'draw_enabled'];
 const NUMS = ['priority','temperature','max_tokens','max_tool_rounds','context_messages',
   'context_expire_seconds','cooldown_seconds','daily_limit','answer_max_chars',
   'input_budget_chars','game_source_max_chars','search_max_matches','read_max_lines',
-  'retry_attempts','retry_delay_seconds',
+  'retry_attempts','retry_delay_seconds','draw_max_per_question','draw_timeout_seconds',
   'file_max_bytes','error_detail_chars','max_concurrent','request_timeout_seconds'];
 const TEXTS = ['prefix','lgtbot_dir','system_prompt','extra_prompt','cooldown_reply',
   'daily_limit_reply','busy_reply','trigger_mode','disclaimer',
@@ -293,7 +306,17 @@ function fill() {
   $('allowed_groups').value = (state.allowed_groups || []).join(', ');
   $('blocked_words').value = (state.blocked_words || []).join(', ');
   $('ai-state').textContent = (state.shared_ai_status || {}).message || '';
+  renderDrawState();
   renderBanners(); renderRoots(); renderProviders();
+}
+
+function renderDrawState() {
+  const info = state.draw_capability || {};
+  const el = $('draw-state');
+  el.textContent = info.message || '';
+  // 只有「开了却用不了」才标红：没开的时候用不了是正常的，不该吓人
+  // 读复选框而不是 state：勾了还没保存时也要立刻看到「这条路通不通」
+  el.style.color = ($('draw_enabled').checked && !info.usable) ? 'var(--danger)' : 'var(--text3)';
 }
 
 function collect() {
@@ -323,7 +346,7 @@ async function loadStats() {
       ['failures_total', '累计失败'], ['tool_calls_total', '累计工具调用'],
       ['regenerations_total', '接地重试'], ['synthesized_total', '合成兜底'],
       ['overflows_total', '超长失败'], ['recovered_calls_total', '代为执行'], ['resumed_total', '断点续答'],
-      ['busy_global_total', '并发拒绝'], ['active_now', '正在处理'],
+      ['busy_global_total', '并发拒绝'], ['active_now', '正在处理'], ['draws_total', '累计出图'],
       ['ungrounded_total', '拦下的臆造'],
       ['blocked_input_total', '拦下的输入'], ['blocked_output_total', '拦下的输出'],
       ['active_contexts', '活跃会话'],
@@ -368,6 +391,7 @@ $('prune').onclick = async () => {
   } catch (error) { toast(error.message, true); }
 };
 $('provider_id').onchange = renderModels;
+$('draw_enabled').onchange = renderDrawState;
 $('refresh-games').onclick = async () => {
   try {
     const data = await call('POST', '/games/refresh', {});

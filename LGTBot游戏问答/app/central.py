@@ -3,9 +3,13 @@
 本插件不保存任何接口地址或密钥 —— 全部由 modules/ai_llm 管理，这里只按
 ``provider_id`` / ``model_preference`` 做选择（modules/ai_llm/docs/README.md）。
 
-刻意用 ``complete()`` 而不是 ``run_agent()``：run_agent 会打开中央运行时能力
-（其他插件共享的工具、MCP、Skills）。本插件面向普通群友开放，工具面必须收敛到
-自己这五个只读工具，不能让模型顺手拿到别的插件注册的写操作或联网能力。
+刻意用 ``complete()`` 而不是 ``run_agent()``、也不传 ``runtime_capabilities``：
+那两条路会把中央运行时能力整片打开（**所有**插件共享的工具、MCP、Skills）。
+本插件面向普通群友开放，工具面必须逐个点名，不能让模型顺手拿到别的插件注册的
+写操作或联网能力。
+
+需要外部能力时走白名单：画图就是这么接的 —— 只把 ``ai_draw:tool:draw`` 一个能力
+包装成自己的工具（见 drawing.py），其余共享能力仍然一个都进不来。
 
 同理传 ``prepare_context=False``：历史由 store.py 自己裁剪，不需要中央再压一遍。
 """
@@ -273,6 +277,22 @@ UNGROUNDED_PROMPT = (
 )
 
 
+# 画图工具开着时才追加。写在代码里而不是面板提示词里，理由同上：这是正确性约束
+# （链接不能进正文），不能被用户改配置时误删。
+#
+# 「不要写链接」是硬要求：图片由插件自己 reply_image 发送，模型根本拿不到 url
+# （drawing.detach_url 在回灌前就摘掉了）。它要是凭想象编一个链接贴进答案，
+# 用户点开就是 404。
+DRAW_RULE = (
+    '【画图工具】你有一个画图工具，但它**不是检索工具**：'
+    '只有用户明确要求「画一张 / 生成图片 / 做个图」时才调用，'
+    '规则、机制、计分、结算类问题一律照常检索源码作答，不要配图、不要主动提议画图。'
+    '每次回答最多画一张。画完后图片由机器人自动发送，'
+    '你不会拿到图片链接，也不要在回答里写链接或 Markdown 图片语法 —— '
+    '只用一句话说明画了什么即可。'
+)
+
+
 def build_system_prompt(current: dict, scope_hint: str) -> str:
     parts = [
         str(current.get('system_prompt') or '').strip(),
@@ -281,6 +301,7 @@ def build_system_prompt(current: dict, scope_hint: str) -> str:
         CODE_LAYOUT_RULE,
         GROUNDING_RULE,
         TOOL_FORMAT_RULE,
+        DRAW_RULE if current.get('draw_enabled') else '',
         safety.system_safety_rules(),
         str(current.get('extra_prompt') or '').strip(),
         f'回答控制在 {int(current.get("answer_max_chars") or 1500)} 字以内。',
@@ -410,7 +431,7 @@ async def ask(
         model=model,
         temperature=float(current.get('temperature') or 0.2),
         max_tokens=int(current.get('max_tokens') or 4096),
-        tools=tools.TOOLS_SCHEMA,
+        tools=tools.schema_for(current),
         tool_handler=tool_handler,
         max_tool_rounds=int(current.get('max_tool_rounds') or 10),
         session_id=session_id,

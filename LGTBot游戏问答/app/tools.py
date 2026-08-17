@@ -1,8 +1,12 @@
-"""交给模型的五个只读工具。
+"""交给模型的六个只读检索工具，外加一个可选的画图工具。
 
-全部经 sandbox 收口 —— 这里不出现任何 open() / os.walk() / 路径拼接。
-工具集**只读**：没有写、删、移动、执行、发消息的入口，所以即使模型被上传的
+检索工具全部经 sandbox 收口 —— 这里不出现任何 open() / os.walk() / 路径拼接。
+它们**只读**：没有写、删、移动、执行、发消息的入口，所以即使模型被上传的
 游戏源码注入，能造成的最坏后果也只是读到别的游戏源码。
+
+唯一的例外是 ``draw_image``（见 drawing.py）：它默认关闭，开了也只是把描述转给
+「AI 画图」插件，审核与额度都在对方那边。它**不属于**只读集，因此在 main.py 的
+接地闸里也不算「查过代码」。
 
 返回值都是 JSON 友好的 dict；失败统一返回 {'ok': False, 'error': ...}，让模型
 看到失败原因后自己换个查法，而不是抛异常中断整轮。
@@ -12,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from . import games, sandbox
+from . import drawing, games, sandbox
 
 TOOLS_SCHEMA = [
     {
@@ -161,7 +165,23 @@ TOOLS_SCHEMA = [
     },
 ]
 
-TOOL_NAMES = [item['function']['name'] for item in TOOLS_SCHEMA]
+READONLY_NAMES = [item['function']['name'] for item in TOOLS_SCHEMA]
+
+# 供解析与校验用的**全集**，与「这一轮真的发给模型几个工具」无关：
+# main.py 要靠它识别模型写成文本的工具调用，画图关着的时候也得认得出来
+# （认出来才能在 run() 里明确回一句「未开启」，而不是当成普通正文发出去）。
+TOOL_NAMES = [*READONLY_NAMES, drawing.TOOL_NAME]
+
+
+def schema_for(current: dict) -> list:
+    """本轮真正交给模型的工具清单。
+
+    画图关着时**不能只在 run() 里挡**：schema 一直挂着的话，模型会反复尝试调用
+    一个注定失败的工具，白烧轮数；schema 本身也要占输入预算（见 main._tool_budget）。
+    """
+    if drawing.enabled(current):
+        return [*TOOLS_SCHEMA, drawing.TOOL_SCHEMA]
+    return TOOLS_SCHEMA
 
 
 # ==================== 实现 ====================
@@ -539,11 +559,16 @@ _HANDLERS = {
 
 async def run(name: str, arguments: dict, current: dict) -> dict:
     """工具总入口。磁盘 IO 放线程池，避免阻塞事件循环里的消息收发。"""
+    if not isinstance(arguments, dict):
+        arguments = {}
+    # 画图是网络调用，本身就是协程，不能塞进 to_thread。
+    # 它的开关判断在 drawing.run 里 —— 那是唯一的执行入口，模型把调用写成 XML
+    # 文本被 main.py 代为执行时也要经过这里，只挡 schema 是拦不住的。
+    if str(name or '') == drawing.TOOL_NAME:
+        return await drawing.run(arguments, current)
     handler = _HANDLERS.get(str(name or ''))
     if handler is None:
         return {'ok': False, 'error': f'未知工具: {name}'}
-    if not isinstance(arguments, dict):
-        arguments = {}
     try:
         return await asyncio.to_thread(handler, current, arguments)
     except sandbox.SandboxError as error:

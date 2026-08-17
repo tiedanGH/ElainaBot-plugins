@@ -218,6 +218,7 @@ def stats() -> dict:
         'synthesized_total': counters.get('synthesized', 0),
         'overflows_total': counters.get('overflows', 0),
         'recovered_calls_total': counters.get('recovered_calls', 0),
+        'draws_total': counters.get('draws', 0),
         'resumed_total': counters.get('resumed', 0),
         'busy_global_total': counters.get('busy_global', 0),
         'ungrounded_total': counters.get('ungrounded', 0),

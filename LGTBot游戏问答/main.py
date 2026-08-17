@@ -30,14 +30,15 @@ from core.plugin.decorators import handler, on_load, on_unload
 from core.plugin.web_pages import register_page, unregister_page
 
 from .app import (
-    central, config, conflict, games, ratelimit, safety, sandbox, store, tools, webpanel,
+    central, config, conflict, drawing, games, ratelimit, safety, sandbox, store, tools,
+    webpanel,
 )
 
 __plugin_meta__ = {
     'name': 'LGTBot 游戏问答',
     'author': '铁蛋',
     'description': '@机器人提问 LGTBot 游戏规则与结算，AI 现场检索源码后作答',
-    'version': '1.8.2',
+    'version': '1.9.0',
     'license': 'MIT',
 }
 
@@ -472,6 +473,7 @@ def _fake_citations(answer: str, seen: set, current: dict) -> list:
 
 def _grounding_problem(
     answer: str, used: set, seen: set, current: dict, question: str = '',
+    drew: bool = False,
 ) -> str:
     """答案是否站得住脚。返回空串表示通过，否则是记进日志的原因。
 
@@ -479,6 +481,12 @@ def _grounding_problem(
       1. 出处指向不存在的文件 —— 铁证，直接毙掉
       2. 一个工具都没调用还长篇大论 —— 纯凭想象作答
       3. 只列了清单、没读任何文件，却写出长篇机制说明 —— 同样是在编
+
+    画图成功时闸 2、3 全部让路（``drew``）：那种回答的本体是图，配的文字本来就
+    只有一句话，没有「必须来自源码」的成分。不放行的话，「画一张某某游戏的插画」
+    会同时踩中「点名了具体游戏」和「没调用内容工具」，被判臆造毙掉，
+    重试还会**再画一张**，白烧一次额度还多发一条图。
+    闸 1 仍然生效 —— 编造出处任何时候都不能放过。
 
     闸 2、3 用长度分档，是为了不误伤合理的短回复和列表类回答：
     「没有查到」「你问的是哪个版本？」不需要检索，「已收录 67 个游戏，包括…」
@@ -491,6 +499,8 @@ def _grounding_problem(
     fake = _fake_citations(answer, seen, current)
     if fake:
         return f'引用了不存在的文件: {"、".join(fake[:5])}'
+    if drew:
+        return ''
     length = len(answer)
     if not used:
         if _needs_source(question, current):
@@ -550,25 +560,28 @@ def _tool_budget(current: dict, payload: list, system_prompt: str) -> int:
     历史长了照样 413，所以每轮实测扣减，历史变长会自动收紧。
     """
     limit = int(current.get('input_budget_chars') or 34000)
-    fixed = len(system_prompt) + _result_size(payload) + _tools_schema_chars()
+    fixed = len(system_prompt) + _result_size(payload) + _tools_schema_chars(current)
     return max(2000, limit - fixed - _PROTOCOL_RESERVE)
 
 
 # 中央模块追加的 XML 兼容协议提示词，也算在输入里
 _PROTOCOL_RESERVE = 1200
-_schema_chars = 0
+_schema_chars: dict = {}
 
 
-def _tools_schema_chars() -> int:
+def _tools_schema_chars(current: dict) -> int:
     """tools schema 序列化后的字符数（中央模块会把它原样发给接口，算输入）。
+
+    按「画图开没开」分别缓存 —— 工具清单会随这个开关变长变短，一个数缓存下来
+    就会算错预算。开关是布尔量，缓存最多两条，不必做失效。
 
     与 _leaked_pattern 同理：懒取，不在模块级碰 tools 的属性 —— 重载时子模块
     可能处于半初始化状态，模块级访问会让整个插件 enable 失败。
     """
-    global _schema_chars
-    if not _schema_chars:
-        _schema_chars = len(json.dumps(tools.TOOLS_SCHEMA, ensure_ascii=False))
-    return _schema_chars
+    key = bool(current.get('draw_enabled'))
+    if key not in _schema_chars:
+        _schema_chars[key] = len(json.dumps(tools.schema_for(current), ensure_ascii=False))
+    return _schema_chars[key]
 
 
 def _result_size(result) -> int:
@@ -745,6 +758,35 @@ def _with_disclaimer(answer: str, current: dict) -> str:
     return f'{text}\n\n{note}'
 
 
+async def _deliver_images(event, urls: list) -> None:
+    """把这一轮画出来的图发给用户。逐张出队，重复调用不会重发。
+
+    图**单独发一条**，不塞进正文：QQ 的富媒体消息（msg_type=7）不解析
+    `<@openid>`，也不渲染引用块，把答案正文塞进去会连 @提问人 和免责声明一起废掉。
+    分开发就各归各的 —— 文字照常走 markdown，图片走图片通道。
+
+    发送顺序在文字之后：正常情况下模型那句「按你的描述画好了」先到，图跟在后面。
+
+    全程吞异常：图已经画出来了（额度也扣过了），发不出去顶多少一张图，
+    绝不能让它把整轮问答带崩 —— 那样用户连文字回复都收不到。
+    """
+    while urls:
+        url = urls.pop(0)
+        try:
+            response = await event.reply_image(url)
+        except Exception as error:  # noqa: BLE001 — 见 docstring
+            log.warning(f'画图结果发送失败: {type(error).__name__}: {error}')
+            continue
+        # 平台失败时框架也可能**不抛异常**，只返回 None 或不带消息 ID 的响应体
+        # （图片下不动、格式不认、被风控都是这样）。光看有没有异常会把失败记成成功。
+        if not (isinstance(response, dict) and response.get('id')):
+            log.warning(f'画图结果未能送达（平台未返回消息 ID）: {url[:120]}')
+            continue
+        # 统计放在这里而不是成功路径里：无论这一轮问答最终成功还是报错，
+        # 只要图真的发出去了就该记一笔，两边各记一次反而对不上。
+        await _bump('draws')
+
+
 async def _resumable(
     make_call, current: dict, payload: list, system_prompt: str,
     transcript: list, used_tools: set, budget: int, scope: str,
@@ -813,14 +855,35 @@ async def _answer(event, question: str) -> None:
     used_tools: set = set()
     seen_paths: set = set()
     transcript: list = []
+    drawn: list = []  # 画出来的图片链接，等文字答复发完再逐张发出去
+    draws = 0
     budget = 0        # 工具结果额度，进 try 后按本轮实际开销算出
     spent = 0
 
     async def tool_handler(name: str, arguments: dict):
-        nonlocal tool_calls, spent
+        nonlocal tool_calls, spent, draws
         tool_calls += 1
+        if str(name) == drawing.TOOL_NAME:
+            # 单次问答的画图次数上限。模型可以在 max_tool_rounds 轮里反复调用，
+            # 不在这儿卡死的话，一个提问就能把 AI 画图的日额度掏空、并连发十条图。
+            cap = int(current.get('draw_max_per_question') or 1)
+            if draws >= cap:
+                used_tools.add(str(name))
+                return {'ok': False, 'error': f'本次回答已经画过 {cap} 张图了，不能再画。'}
+            draws += 1
         result = await tools.run(name, arguments, current)
         used_tools.add(str(name))
+        if str(name) == drawing.TOOL_NAME:
+            # 链接摘出来自己发，不回灌给模型（理由见 drawing.detach_url）
+            url = drawing.detach_url(result)
+            if url:
+                drawn.append(url)
+            else:
+                draws -= 1   # 没出图就不占额度，让模型换个描述还能再试
+            # 结果只剩一句话，占不了多少，但仍要计进预算 —— 漏算就等于给 413 让路。
+            # 不进 transcript：合成兜底要的是源码，一句「图已生成」没有合成价值。
+            spent += _result_size(result)
+            return result
         # 先按剩余预算裁剪再回灌：工具结果是一轮轮累加进 messages 的，
         # 不控总量迟早撞上接口的输入字符硬上限（HTTP 413，整轮报废）
         if isinstance(result, dict) and result.get('ok'):
@@ -909,7 +972,7 @@ async def _answer(event, question: str) -> None:
                 reason = '工具调用写成了 XML 文本，中央模块没能解析执行'
             else:
                 reason = _grounding_problem(
-                    answer, used_tools, seen_paths, current, question,
+                    answer, used_tools, seen_paths, current, question, bool(drawn),
                 )
             if not reason:
                 break
@@ -945,6 +1008,10 @@ async def _answer(event, question: str) -> None:
             blocked = True
         if blocked:
             await _bump('blocked_output')
+            # 文字都没过审，图也别发了。图片本身在 AI 画图那边过过一遍审核，
+            # 但这一轮整体已经被判定为不该发出去，这时候单发一张图既没有上下文、
+            # 也与「拦下来」的判断自相矛盾 —— 从严。
+            drawn.clear()
             # 连这一轮的提问一起撤回：违规答案不入库，光留个没有回复的提问会让
             # 下一轮的历史出现悬空的 user 消息，反而干扰模型。
             if message_id is not None:
@@ -987,7 +1054,12 @@ async def _answer(event, question: str) -> None:
                 '查询失败了，稍后再试一次；如果一直失败请联系管理员。', error, current,
             ))
     finally:
+        # 先放并发槽再发图：发图要等 QQ 那边上传，几秒起步，占着槽只会让别人白等。
         ratelimit.release(user_id)
+        # 放 finally 而不是成功路径里：图一旦画出来，AI 画图那边的额度就已经扣了。
+        # 后面哪一步失败（作答不合格、审核报错、发文字失败）都不该让这张图作废 ——
+        # 唯一不发的情况是内容审核明确拦下了这一轮，那时上面已经把列表清空。
+        await _deliver_images(event, drawn)
 
 
 def _scope_hint(current: dict) -> str:
@@ -1046,6 +1118,12 @@ async def initialize() -> None:
     )
     if not ready:
         log.warning('LGTBot 源码目录不可用: %s —— 请在面板配置', sandbox.base_dir(current))
+    if current.get('draw_enabled'):
+        # 插件加载顺序不保证，AI 画图可能还没注册能力，所以这条只作提示，
+        # 以面板上的实时状态为准。
+        state = drawing.state()
+        log.info('画图能力：%s%s', state['message'],
+                 '' if state['usable'] else '（若 AI 画图尚未加载完，稍后以面板状态为准）')
     warning = conflict.binding_warning(current)
     if warning:
         log.warning(warning)

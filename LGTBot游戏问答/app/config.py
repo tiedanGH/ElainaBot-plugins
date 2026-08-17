@@ -174,6 +174,21 @@ DEFAULT_CONFIG = {
     'read_max_lines': 400,
     'file_max_bytes': 400000,
 
+    # ---- 画图能力（借用「AI 画图」注册在中央 LLM 上的共享工具）----
+    # 默认关闭：本插件的定位是查源码答疑，画图属于额外的创作能力；每张图都要烧
+    # AI 画图那边的接口额度，得由管理员显式打开。开关只管「给不给模型这个工具」，
+    # 出图、内容审核、留档、每日额度全部还在 AI 画图插件里。
+    'draw_enabled': False,
+
+    # 单次问答最多画几张。没有这道闸的话，模型能在 max_tool_rounds（默认 10）轮里
+    # 连画十张 —— 一个提问就能把对方的日额度掏空，还会连发十条图片消息。
+    'draw_max_per_question': 1,
+
+    # 单次画图超时。出图比模型调用慢得多（实测几十秒），所以不复用
+    # request_timeout_seconds。挂住不放会一直占着本插件的并发槽，
+    # 表现出来就是所有人都问不了。0 = 不限（不建议）。
+    'draw_timeout_seconds': 120,
+
     # ---- 内容安全----
     # moderation_fail_closed 只影响**输入**审核；输出审核永远 fail-closed，
     # 审核不可用时一律不发 —— 见 main.py::_output_rejected。
@@ -301,6 +316,8 @@ _INT_FIELDS = {
     'search_max_matches': (5, 300),
     'read_max_lines': (20, 2000),
     'file_max_bytes': (10000, 2000000),
+    'draw_max_per_question': (1, 5),
+    'draw_timeout_seconds': (0, 600),
 }
 
 
