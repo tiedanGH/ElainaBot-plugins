@@ -150,32 +150,85 @@ async def _delete_records(request: web.Request) -> web.Response:
     return web.json_response({'success': True, 'data': {'deleted': 1 if removed else 0}})
 
 
+def _route_key(route: dict) -> tuple[str, str]:
+    return str(route.get('provider_id') or ''), str(route.get('model') or '')
+
+
+async def _try_route(current: dict, prompt: str, route: dict, routes: list[dict]) -> tuple[dict, bytes, dict]:
+    """只跑指定的一条线路，返回 (结果或 None, 图片字节, 这一步的日志)。"""
+    others = {_route_key(item) for item in routes if _route_key(item) != _route_key(route)}
+    step = {
+        'provider_id': route['provider_id'],
+        'provider': central.provider_name(route['provider_id']),
+        'model': route['model'], 'ok': False, 'ms': 0, 'error': '', 'note': '',
+    }
+    started = time.perf_counter()
+    try:
+        async with limiter.semaphore(current['max_concurrency']):
+            result = await central.generate(current, prompt, exclude=others)
+    except Exception as error:  # noqa: BLE001 - 面板要看到每条线路的真实报错
+        step['ms'] = round((time.perf_counter() - started) * 1000)
+        step['error'] = str(error)[:1500]
+        return None, b'', step
+    image = result['data'] or (await media.download(result['url']) or b'')
+    step['ms'] = round((time.perf_counter() - started) * 1000)
+    if not image and not result['url']:
+        step['error'] = '接口没有返回可用的图片内容'
+        return None, b'', step
+    if not image:
+        step['note'] = '服务器下载不到这张图，预览改用接口原始链接；聊天里这条线路会被判定失败'
+    step['ok'] = True
+    return result, image, step
+
+
 async def _test_draw(request: web.Request) -> web.Response:
-    """在面板中试跑一次生图，结果同样写入历史记录。"""
+    """面板试跑：逐条线路跑，把每条的报错与故障转移过程原样回给页面（不入库）。"""
     body = await _body(request)
     current = config.load()
     prompt = str(body.get('prompt') or '').strip()[:current['input_max_length']]
     if not prompt:
         return web.json_response({'success': False, 'error': '请填写画面描述'}, status=400)
+    routes = central.valid_routes(current)
+    if not routes:
+        return web.json_response({
+            'success': False, 'error': central.status()['message']
+            if not central.available() else '没有可用的生图线路，请先在「生图线路」页配置接口与模型',
+            'data': {'trace': []},
+        }, status=400)
     record = {
         'created_at': time.time(), 'source': 'panel', 'status': 'failed',
         'user_id': 'panel', 'username': 'Web 面板', 'chat_type': 'panel',
         'prompt': prompt,
     }
     started = time.perf_counter()
-    try:
-        optimized = await central.optimize_prompt(current, prompt)
-        final_prompt = central.build_prompt(current, optimized)
-        record['final_prompt'] = final_prompt
-        async with limiter.semaphore(current['max_concurrency']):
-            result = await central.generate(current, final_prompt)
-    except Exception as error:  # noqa: BLE001 - 面板需要看到真实失败原因
+    optimized = await central.optimize_prompt(current, prompt)
+    final_prompt = central.build_prompt(current, optimized)
+    record['final_prompt'] = final_prompt
+
+    trace: list[dict] = []
+    result = None
+    image = b''
+    for index, route in enumerate(routes, 1):
+        result, image, step = await _try_route(current, final_prompt, route, routes)
+        step['index'] = index
+        trace.append(step)
+        if result is not None:
+            break
+
+    if result is None:
         record.update({
-            'error': str(error)[:1000],
+            'error': '；'.join(
+                f"{item['provider']}/{item['model']}: {item['error']}" for item in trace
+            )[:1000],
             'duration_ms': round((time.perf_counter() - started) * 1000),
         })
         await asyncio.to_thread(store.add, record, current['history_limit'])
-        return web.json_response({'success': False, 'error': str(error)[:500]}, status=502)
+        return web.json_response({
+            'success': False,
+            'error': f'{len(trace)} 条线路全部失败',
+            'data': {'trace': trace, 'final_prompt': final_prompt},
+        }, status=502)
+
     record.update({
         'status': 'success',
         'duration_ms': round((time.perf_counter() - started) * 1000),
@@ -184,7 +237,6 @@ async def _test_draw(request: web.Request) -> web.Response:
         'image_url': result['url'], 'delivered': 1, 'send_mode': 'panel',
     })
     # 试跑只在面板里看图，不上传图床：预览直接读本地留存，省掉一次图床额度。
-    image = result['data'] or (await media.download(result['url']) or b'')
     record_id = await asyncio.to_thread(store.add, record, current['history_limit'])
     stored = False
     if image and current.get('history_save_images'):
@@ -202,5 +254,5 @@ async def _test_draw(request: web.Request) -> web.Response:
         'provider': record['provider'], 'model': record['model'],
         'duration_ms': record['duration_ms'], 'image_url': record['image_url'],
         'width': width, 'height': height, 'preview': preview,
-        'has_image': stored,
+        'has_image': stored, 'trace': trace,
     }})

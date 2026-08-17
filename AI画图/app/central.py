@@ -135,6 +135,16 @@ def valid_routes(config: dict) -> list[dict]:
     return result
 
 
+def provider_name(provider_id: str) -> str:
+    """接口展示名；查不到时回落到 ID，便于在故障日志里指认线路。"""
+    target = str(provider_id or '')
+    provider = next(
+        (item for item in public_config().get('providers', []) if item.get('id') == target),
+        None,
+    )
+    return str((provider or {}).get('name') or target)
+
+
 async def optimize_prompt(config: dict, text: str) -> str:
     """用中央对话模型把用户描述改写为生图提示词；失败时回落到原文。"""
     value = str(text or '').strip()
