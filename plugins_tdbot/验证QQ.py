@@ -61,13 +61,13 @@ async def _verify(appid, openid, qq):
 
 
 @handler(r'^/?验证\s+(\d{5,15})\s*$', name='验证QQ号',
-         desc='[仅全量] 验证当前 openid 是否对应指定 QQ 号')
+         desc='验证当前 openid 是否对应指定 QQ 号', block=True)
 async def cmd_verify(event, match):
     # 群场景: 仅全量群可触发 (私信不限)
-    if event.is_group and not _is_full_volume_group(event):
-        btn = [[{'text': '全量消息授权', 'data': '全量申请', 'style': 4}]]
-        await event.reply("ℹ 此功能仅全量群可用", btn)
-        return
+    # if event.is_group and not _is_full_volume_group(event):
+    #     btn = [[{'text': '全量消息授权', 'data': '全量申请', 'style': 4}]]
+    #     await event.reply("ℹ 此功能仅全量群可用", btn)
+    #     return
 
     qq = match.group(1)
     appid = event.appid or ''
