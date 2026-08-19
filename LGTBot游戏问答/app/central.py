@@ -230,43 +230,53 @@ TOOL_FORMAT_RULE = (
     '实测出现过让用户去跑 list_games 的错误回复。'
 )
 
-# 实测模型会凭空编造出 `<游戏>/game_logic/combinations.py:212-230` 这种**根本不存在**的
-# Python 路径和行号，然后据此长篇大论 —— 整个 LGTBot 是 C++ 项目，一个 .py 都没有。
 # 光说「要先检索」拦不住，必须把真实的代码布局摆给它，让「编一个路径」这件事失去空间。
 # 这里只写项目级事实，不提任何具体游戏、不举具体游戏的例子。
 CODE_LAYOUT_RULE = (
-    '【源码结构】LGTBot 引擎与全部游戏都是 C++ 实现，源码里没有任何 Python 文件，'
-    '不存在 game_logic/ 之类的目录。每个游戏是 games/ 下的一个目录，常见文件：\n'
+    '【源码结构】LGTBot 引擎与全部游戏都是 C++ 实现，每个游戏是 games/ 下的一个目录，常见文件：\n'
     '- rule.md：作者写给玩家的规则文档\n'
     '- mygame.cc：主逻辑，阶段流转、玩家动作、计分与结算都在这里\n'
     '- achievements.h：成就定义与达成条件\n'
-    '- options.h / option.cmake：游戏选项、默认值与倍率\n'
+    '- options.h / option.cmake：游戏选项、默认值\n'
     '- unittest.cc：单元测试，能反映真实的判定预期\n'
-    '**很多游戏还有额外的 .h / .cc，而机制往往正实现在那些额外文件里**，'
-    '不要以为只有上面几个。最省事的办法是直接用 read_game_source 一次读全，'
-    '它会带上该游戏所有源码；装不下时也会明确告诉你哪些文件没读到。\n'
-    '**禁止臆造任何目录名、文件名或行号。**只允许引用工具真实返回过的路径，'
-    '没读到就说没查到，绝不用「大概是这样」的方式补全代码细节。'
+    '**很多游戏还有额外的 .h / .cc，而机制往往正实现在那些额外文件里**，不要以为只有上面几个。'
+    '最省事的办法是直接用 read_game_source 一次读全，它会带上该游戏所有源码；装不下时也会明确告诉你哪些文件没读到。\n'
+    '**禁止臆造任何目录名、文件名或行号。**只允许引用工具真实返回过的路径，没读到就说没查到，绝不用「大概是这样」的方式补全代码细节。'
 )
 
-# 项目本身的事实。逐条对应 plugins/LGTBot_ElainaBot/README.md 的「致谢与项目来源」，
-# 不是我编的。
+# 项目本身的事实。为什么要预置：「LGTBot 是什么」这类元问题没有对应的游戏可读，
+# 模型只会凭自己的先验知识作答 —— 而它对这个小众项目的先验基本是错的
+# （实测答出过整段臆造）。把权威事实摆进提示词，零检索也能答对；要细节再读 README.md。
 #
-# 为什么要预置：「LGTBot 是什么」这类元问题没有对应的游戏可读，模型只会凭自己的
-# 先验知识作答 —— 而它对这个小众项目的先验基本是错的（实测答出过整段臆造）。
-# 把权威事实摆进提示词，零检索也能答对；要细节再让它读 README.md。
-PROJECT_FACTS = (
+# ⚠️ 游戏数量**不写死**。上游 README 那句「50+ 种」早就过时（实测已 68 款），
+# 提示词里抄一个数字迟早再次过时，而模型会拿它当权威一路复读。所以现算真实索引。
+_FACTS_TEMPLATE = (
     '【项目简介】以下是关于本项目的权威事实，可直接用于回答，不需要检索：\n'
-    '- LGTBot 是一个基于 C++20 的多人文字推理游戏裁判机器人库，内置 50+ 种不同风格的游戏，'
-    '由 @Slontia 开发（LGPLv2）。游戏逻辑、引擎核心、图片渲染都是上游实现的。\n'
-    '- 「LGT」取自日本漫画家甲斐谷忍《Liar Game》里的虚构组织'
-    '「Liar Game Tournament 事务所」。\n'
+    '- LGTBot 是一个基于 C++20 的多人**智力竞技**游戏裁判机器人库，内置 {count}风格各异的游戏。\n'
+    '要讲清都有哪些类型就调用 list_games 看真实清单与简介，不要凭印象概括。\n'
+    '- 原作者是 @Slontia（LGPLv2），引擎核心、游戏逻辑、图片渲染都由上游实现；'
+    '**目前的主要维护者是铁蛋** —— 他不只是适配层作者，也在维护 LGTBot 本体。\n'
+    '- 「LGT」取自日本漫画家甲斐谷忍《Liar Game》里的虚构组织「Liar Game Tournament 事务所」。\n'
     '- LGTBot_ElainaBot 是把 LGTBot 接到 ElainaBot_v2（QQ 官方机器人框架）的**适配层**，'
-    '作者是铁蛋。它不改引擎功能，只做框架适配和 QQ 协议限制的处理'
-    '（媒体消息合并、@提及格式、按钮交互等）。\n'
+    '同样出自铁蛋之手。它不改引擎玩法，只做框架适配和 QQ 协议限制的处理（媒体消息合并、@提及格式、按钮交互等）。\n'
     '- 你自己是这个机器人上的游戏答疑助手，负责检索源码回答玩家关于游戏的问题。\n'
     '问到项目、引擎、机器人本身时，依据以上事实回答即可；需要更多细节再读 README.md。'
 )
+
+
+def project_facts(current: dict) -> str:
+    """把真实收录数填进项目简介。
+
+    索引读不出来（源码目录没配好、子模块没拉）时退回「70+ 款」这个保守说法 ——
+    元问题不该因为源码目录不可用就答不上来，那是两件事。
+    """
+    try:
+        from . import games
+        count = len(games.index(current))
+    except Exception:  # noqa: BLE001 — 简介拿不到真实数量也得能用
+        count = 0
+    return _FACTS_TEMPLATE.format(count=f'{count} 款' if count else '70+ 款')
+
 
 # 硬性作答前提。与 CODE_LAYOUT_RULE 一样写死在代码里，不进面板可编辑的 system_prompt。
 GROUNDING_RULE = (
@@ -330,7 +340,7 @@ def build_system_prompt(current: dict, scope_hint: str) -> str:
     parts = [
         str(current.get('system_prompt') or '').strip(),
         scope_hint,
-        PROJECT_FACTS,
+        project_facts(current),
         CODE_LAYOUT_RULE,
         GROUNDING_RULE,
         TOOL_FORMAT_RULE,
