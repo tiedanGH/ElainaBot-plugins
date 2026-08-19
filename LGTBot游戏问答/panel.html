@@ -146,6 +146,7 @@ td code{font-size:11px;color:var(--text3)}
       <div><label>并发话术（全局满）</label><input type="text" id="busy_global_reply"></div>
       <div><label>报错原因字数上限</label><input type="number" id="error_detail_chars"></div>
     </div>
+    <p class="hint">这几条话术<b>清空保存 = 恢复默认</b>，不会真的留空——留空的话被限流的用户什么提示都收不到，看起来就是「机器人没反应」，比报错还难查。</p>
   </div>
 
   <div class="card">
@@ -168,7 +169,7 @@ td code{font-size:11px;color:var(--text3)}
     </div>
     <label style="margin-top:12px">审核提示词</label>
     <textarea id="safety_review_prompt" style="min-height:120px"></textarea>
-    <p class="hint">审核模型只允许返回「安全」或「内容违规，已禁止发送」，返回其他内容一律视为审核不可用。游戏规则天然含「杀」「攻击」「血量」等词，可能被判违规——宁可误伤也不放行是刻意取舍，确有需要就调这段提示词，<b>不要整条关掉</b>。</p>
+    <p class="hint">审核模型只允许返回「安全」或「内容违规，已禁止发送」，返回其他内容一律视为审核不可用。游戏规则天然含「杀」「攻击」「血量」等词，可能被判违规——宁可误伤也不放行是刻意取舍，确有需要就调这段提示词，<b>不要整条关掉</b>。<br><b>清空这个框再保存 = 恢复默认审核提示词</b>（与 AI 聊天陪伴同口径）。删空了也不会让审核裸奔：保存与加载时都会自动补回默认值。</p>
   </div>
 
   <div class="card">

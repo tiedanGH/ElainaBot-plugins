@@ -210,6 +210,37 @@ DEFAULT_CONFIG = {
     'extra_prompt': '',
 }
 
+# 清空后会造成**静默故障**的文案，一律回填默认值。这些不是「留空 = 关掉某功能」：
+#
+#   safety_review_prompt  面板看着像审核没配。运行期虽然还有一层 or 兜底
+#                         （central._moderate），但没人该靠那个才敢信审核是开着的
+#   *_reply / *_response  _reply 遇到空串直接 return —— 用户被限流、被审核拦下时
+#                         **什么提示都收不到**，表现成「机器人没反应」，比报错更难查
+#
+# 刻意**不在**名单里的（留空各有含义，见 DEFAULT_CONFIG 注释）：
+#   disclaimer    留空 = 不附免责声明
+#   extra_prompt  留空 = 不追加
+#   lgtbot_dir    留空 = 自动定位
+_REQUIRED_TEXTS = (
+    'prefix', 'system_prompt', 'safety_review_prompt',
+    'cooldown_reply', 'daily_limit_reply', 'busy_reply', 'busy_global_reply',
+    'blocked_response', 'moderation_blocked_response',
+)
+
+
+def _fill_required(value: dict) -> dict:
+    """把被清空的必填文案补回默认值。
+
+    读、写两边都过一遍：只在 save 里补的话，已经存成空串的配置要等下次保存才自愈；
+    在 _read 里也补，插件一重载就恢复正常，不用管当初是怎么被清空的
+    （面板误删、手改 config.json、旧版本遗留都算）。
+    """
+    for key in _REQUIRED_TEXTS:
+        if not str(value.get(key) or '').strip():
+            value[key] = DEFAULT_CONFIG[key]
+    return value
+
+
 _lock = threading.Lock()
 _data_dir = ''
 _cache: dict | None = None
@@ -267,7 +298,7 @@ def _read() -> dict:
     if isinstance(stored, dict):
         value.update({key: stored[key] for key in stored if key in DEFAULT_CONFIG})
         value['roots'] = _merge_roots(stored.get('roots'))
-    return value
+    return _fill_required(value)
 
 
 def _merge_roots(stored) -> list[dict]:
@@ -358,10 +389,7 @@ def save(patch: dict) -> dict:
                 current[key] = bool(value)
             else:
                 current[key] = str(value if value is not None else '')
-        if not str(current.get('prefix') or '').strip():
-            current['prefix'] = DEFAULT_CONFIG['prefix']
-        if not str(current.get('system_prompt') or '').strip():
-            current['system_prompt'] = DEFAULT_SYSTEM_PROMPT
+        _fill_required(current)
         _write(current)
         _cache = current
         return copy.deepcopy(current)
