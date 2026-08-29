@@ -56,22 +56,27 @@ import time
 
 from . import central
 
-# 拒绝分类 → 群内展示名
+# 拒绝分类 → 群内展示名。这里是**没通过的原因**, 措辞必须是否定的 ——
+# 「未通过分类: 内容合规」会被读成「内容是合规的」, 正好反了。
 CATEGORY_LABELS = {
     'origin': '原作出处标注',
-    'compliance': '内容合规',
+    'compliance': '内容违规',
     'copyright': '版权素材',
     'injection': '提示词注入',
     'incomplete': '送审内容不完整',
     'other': '其他',
 }
+# 审查标准清单 → 展示名。同一批 key 在「本次审查了哪几条标准」这个语境下要中性,
+# 不能写成「内容违规」(那是审查结果, 不是标准名)。只在与上面不同的项上覆盖。
+_CRITERIA_LABEL_OVERRIDE = {'compliance': '内容合规'}
 # 非标准分类 (不与某条审查标准对应, 但两种模式下都允许出现):
 # injection 由本地预扫描产出; incomplete = 材料不足以判断 (比 other 说得清问题在哪);
 # other 是模型的兜底分类, 提示词里已要求尽量别用。
 _EXTRA_CATEGORIES = ('injection', 'incomplete', 'other')
 _ALIAS = {
     '原作出处标注': 'origin', '出处': 'origin', '署名': 'origin', 'attribution': 'origin',
-    '内容合规': 'compliance', '合规': 'compliance', '赌博': 'compliance',
+    '内容违规': 'compliance', '内容合规': 'compliance', '合规': 'compliance',
+    '赌博': 'compliance',
     '色情': 'compliance', '政治': 'compliance',
     '版权素材': 'copyright', '版权': 'copyright', '素材': 'copyright', 'license': 'copyright',
     '不完整': 'incomplete', '缺失': 'incomplete', '截断': 'incomplete',
@@ -488,7 +493,20 @@ def _norm_categories(value, allowed: tuple = ARCHIVE_CRITERIA) -> list:
 
 
 def labels(categories: list) -> str:
+    """未通过分类的展示串 (否定语义, 见 CATEGORY_LABELS)。"""
     return '、'.join(CATEGORY_LABELS.get(c, c) for c in categories) or '未标注分类'
+
+
+def criteria_labels(keys: list) -> str:
+    """本次审查了哪几条标准的展示串 (中性语义)。"""
+    return '、'.join(
+        _CRITERIA_LABEL_OVERRIDE.get(k, CATEGORY_LABELS.get(k, k)) for k in keys
+    ) or '未标注标准'
+
+
+def criteria_label_map() -> dict:
+    """给面板用的标准展示名映射 (在分类展示名基础上覆盖中性措辞)。"""
+    return {**CATEGORY_LABELS, **_CRITERIA_LABEL_OVERRIDE}
 
 
 _TARGET_BAD = re.compile(r'[\r\n\t"\'`<>]')

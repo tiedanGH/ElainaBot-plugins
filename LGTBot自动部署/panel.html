@@ -309,7 +309,7 @@ const TEXTS=['upload_dir','review_prompt','compile_url'];
 const LISTS=['allowed_groups','notify_users','required_files'];
 const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',integrity:'包不完整',review:'审核',deploy:'部署失败',deployed:'已上传',error:'异常',cancelled:'已取消'};
 
-let CFG={},LABELS={},RECORDS=[];
+let CFG={},LABELS={},CRIT_LABELS={},RECORDS=[];
 
 function $(id){return document.getElementById(id)}
 function esc(v){return String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
@@ -473,7 +473,7 @@ function restartText(r){
 async function loadRecords(){
   const r=await api('/records');
   if(!r.success)return toast('读取记录失败');
-  RECORDS=r.records||[];LABELS=r.labels||{};
+  RECORDS=r.records||[];LABELS=r.labels||{};CRIT_LABELS=r.criteria_labels||r.labels||{};
   const s=r.stats||{};
   $('st-total').textContent=s.total??0;$('st-pass').textContent=s.passed??0;
   $('st-reject').textContent=s.rejected??0;$('st-manual').textContent=s.manual??0;
@@ -503,7 +503,7 @@ async function openRecord(id){
     ['记录号',rec.id],['时间',rec.time],['群 openid',rec.group_id],
     ['提交者',(rec.username||'')+' '+(rec.user_id||'')],['文件',rec.filename],
     ['上传模式',(rec.mode==='file'?'单文件增量':'压缩包')+(rec.forced?'（主人强制上传，跳过审核）':'')],
-    ['审查标准',(rec.criteria||[]).map(c=>LABELS[c]||c).join('、')||'-'],
+    ['审查标准',(rec.criteria||[]).map(c=>CRIT_LABELS[c]||c).join('、')||'-'],
     ['游戏名称',rec.game_name||'-'],['游戏描述',rec.game_desc||'-'],
     ['违规位置',(rec.findings||[]).map(f=>{
       let label=LABELS[f.category]||f.category||'其他';if(f.suspect)label+='·疑似';

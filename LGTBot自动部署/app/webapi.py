@@ -104,7 +104,8 @@ async def _get_records(request: web.Request):
         'manual': sum(1 for r in records if _manual(r)),
     }
     return web.json_response({'success': True, 'records': records, 'stats': stats,
-                              'labels': review.CATEGORY_LABELS})
+                              'labels': review.CATEGORY_LABELS,
+                              'criteria_labels': review.criteria_label_map()})
 
 
 async def _get_record(request: web.Request):

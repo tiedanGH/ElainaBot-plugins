@@ -456,7 +456,7 @@ def _review_header(record: dict, result: dict | None = None) -> str:
     ]
     if result:
         lines += [
-            f'- 审查标准: {review.labels(result.get("criteria") or [])}',
+            f'- 审查标准: {review.criteria_labels(result.get("criteria") or [])}',
             f'- 模型: {result["model"]}',
             f'- 结论: {result["verdict"]}',
             f'- 分类: {", ".join(result["categories"]) or "无"}',
