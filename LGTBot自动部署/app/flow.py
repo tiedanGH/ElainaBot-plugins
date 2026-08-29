@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 
 from core.base.logger import PLUGIN, get_logger, report_error
@@ -700,6 +701,22 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
     await _send(event, _compile_text(cfg, record, result, game, restart), active=True)
 
 
+# 群消息里遮蔽 IP:端口 —— 编译 API 地址默认指向本机, 网络异常的报错会把它带出来
+_ADDR_RE = re.compile(r'(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?')
+
+
+def _compile_reason(result: dict) -> str:
+    """编译失败原因 (群消息用)。
+
+    只取编译 API 的 ``error`` 字段 —— 它是 API 自己的固定文案 (见 build_api.py 的
+    ``_err`` 调用), **不含编译器输出**; 编译器输出在单独的 ``log_tail`` 里, 那份掺着
+    上传者的源码, 只进留档不进群。这里仍走一遍展示净化: 去控制字符与换行 (防伪造
+    多行消息)、去 ``<>`` (防伪造 @ 全体), 再遮蔽 IP:端口。
+    """
+    text = _ADDR_RE.sub('(已隐藏)', str(result.get('error') or ''))
+    return review._clean_display(text, 200)
+
+
 def _restart_game_name(record: dict, game: str) -> str:
     """计划重启的维护原因里用的游戏名: 优先中文名, 取不到则用目录名 (英文名)。
 
@@ -778,8 +795,12 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str,
         return '🔧 自动编译未启用, 需手动编译后生效'
 
     rc = result.get('returncode')
-    lines = [
-        '❌ 编译失败' + (f' (退出码 {rc})' if rc is not None else '') + ', 需人工排查',
+    lines = [f'❌ {compilemod.STATUS_LABELS.get(st, "编译失败")}'
+             + (f' (退出码 {rc})' if rc is not None else '') + ', 需人工排查']
+    reason = _compile_reason(result)
+    if reason:
+        lines.append(f'❗ 原因: {reason}')
+    lines += [
         f'🆔 记录: {record["id"]}',
         '📄 编译日志与 API 返回已留档, 请在后台「LGTBot 自动部署」页查看',
     ]
