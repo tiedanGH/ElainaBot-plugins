@@ -853,7 +853,8 @@ async def _run_recompile(event, cfg: dict, game: str, last: dict):
         'error': '',
         '_started': time.time(),
     }
-    store.save_review_text(
+    # 返回值必须登记进 record —— 删除记录时按 review_file 清留档, 不登记就成孤儿文件
+    record['review_file'] = store.save_review_text(
         rid,
         f'重新编译目录「{game}」, 未重新上传文件。\n'
         f'依据记录: {last.get("id")} ({_record_outcome(last)})',

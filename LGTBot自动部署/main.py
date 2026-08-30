@@ -89,7 +89,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 自动部署',
     'author': '铁蛋',
     'description': '/upload 引用群文件上传到 lgtbot 目录, 自动内容审核 + 请求编译 + 目录权限管理',
-    'version': '1.9.1',
+    'version': '1.9.2',
 }
 
 log = get_logger(PLUGIN, 'LGTBot自动部署')

@@ -167,22 +167,23 @@ def delete_record(rid: str, with_files: bool = True) -> dict:
 
     removed = []
     if with_files:
-        # 按记录里登记的相对路径删, 而不是自己拼文件名 —— 拼错就会误删别人的留档
-        for rel in (target.get('review_file'), target.get('archive_file')):
-            full = resolve(str(rel or ''))
-            if full and os.path.isfile(full):
-                try:
-                    os.remove(full)
-                    removed.append(rel)
-                except OSError:
-                    pass
-        diag = os.path.join(DIAG_DIR, f'{rid}.json')
-        if os.path.isfile(diag):
+        def _drop(full: str):
+            if not full or not os.path.isfile(full):
+                return
             try:
-                os.remove(diag)
-                removed.append(os.path.relpath(diag, DATA_DIR).replace('\\', '/'))
+                os.remove(full)
+                removed.append(os.path.relpath(full, DATA_DIR).replace('\\', '/'))
             except OSError:
                 pass
+
+        # 压缩包留档的文件名带原始文件名, 只能按记录里登记的路径删 —— 自己拼会拼错,
+        # 甚至误删同前缀的别人留档
+        _drop(resolve(str(target.get('archive_file') or '')))
+        # 审核留档固定是 reviews/<记录号>.md, 名字可推导: 优先用登记路径, 记录里
+        # 没登记 (如早期的重编记录) 就按约定名兜底, 免得留下孤儿 md
+        _drop(resolve(str(target.get('review_file') or ''))
+              or os.path.join(REVIEWS_DIR, f'{rid}.md'))
+        _drop(os.path.join(DIAG_DIR, f'{rid}.json'))
     return {'ok': True, 'error': '', 'files': removed}
 
 
