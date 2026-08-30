@@ -323,7 +323,9 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
         record.update(stage='duplicate',
                       error=f'与记录 {dup.get("id")} 完全一致 (SHA256 相同), '
                             f'旧结论「{_record_outcome(dup)}」')
-        return await _finish_fail(event, cfg, record, '重复上传, 已拒收', suffix=_dup_tip(dup))
+        # 不 @ 部署人员: 重传同一个包纯属上传者操作失误, 没有任何要人工介入的地方
+        return await _finish_fail(event, cfg, record, '重复上传, 已拒收',
+                                  suffix=_dup_tip(dup), notify=False)
 
     if cfg.get('keep_archive'):
         record['archive_file'] = store.save_archive(rid, fname, data)
@@ -509,8 +511,12 @@ def _where(record: dict) -> str:
 
 
 def _fail_text(record: dict, cfg: dict, title: str, suffix: str = '',
-               extra: list | None = None) -> str:
-    """失败结论: 只给原因与记录号, 不含任何模型输出。``extra`` 是补充明细行。"""
+               extra: list | None = None, notify: bool = True) -> str:
+    """失败结论: 只给原因与记录号, 不含任何模型输出。``extra`` 是补充明细行。
+
+    ``notify=False`` 不 @ 部署人员 —— 用于上传者自己就能处理完、开发者不需要
+    知道的情形 (如重复上传拒收: 内容一个字节没改, 没有任何要人工介入的地方)。
+    """
     lines = [
         f'⚠️ {title}, 需人工处理' if not suffix else f'⚠️ {title}',
         f'📦 文件: {record["filename"]} → {_where(record)}',
@@ -520,16 +526,16 @@ def _fail_text(record: dict, cfg: dict, title: str, suffix: str = '',
     lines.append(f'🆔 记录: {record["id"]}')
     if suffix:
         lines.append(f'> 💡 {suffix}')
-    at = _mentions(cfg, record)
+    at = _mentions(cfg, record) if notify else ''
     if at:
         lines.append(at + (' 请知悉' if suffix else ' 请人工处理'))
     return '\n'.join(lines)
 
 
 async def _finish_fail(event, cfg: dict, record: dict, title: str, suffix: str = '',
-                       extra: list | None = None):
+                       extra: list | None = None, notify: bool = True):
     _persist(record)
-    await _send(event, _fail_text(record, cfg, title, suffix, extra))
+    await _send(event, _fail_text(record, cfg, title, suffix, extra, notify))
 
 
 # ==================== 送审文本超限 ====================
@@ -725,6 +731,15 @@ async def _compile_and_report(event, cfg: dict, record: dict, game: str) -> dict
     # 的 5 分钟有效期, 用被动只会把结论静默丢掉 —— 不差这一条主动额度。
     await _send(event, _compile_text(cfg, record, result, game, restart), active=True)
     return result
+
+
+def _recompile_tip(game: str) -> str:
+    """编译没成时的补救提示。
+
+    内容相同的包会被查重拒收 (见 _pipeline), 所以必须主动告诉用户有 /compile 这条路,
+    否则他只会去重传、然后撞上「重复上传, 已拒收」。
+    """
+    return f'> 💡 遇到临时问题可直接 /compile {game} 重新编译, 无需重传文件'
 
 
 # 群消息里遮蔽 IP:端口 —— 编译 API 地址默认指向本机, 网络异常的报错会把它带出来
@@ -970,6 +985,7 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str,
             f'⚠️ 编译 {wait} 秒超时无响应, 已自动取消'
             + ('' if term.get('ok') else ' (取消请求未确认, 请到编译面板检查)'),
             f'🆔 记录: {record["id"]}',
+            _recompile_tip(game),
         ]
         if at_dev:
             lines.append(at_dev + ' 请复查编译问题')
@@ -988,6 +1004,9 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str,
         f'🆔 记录: {record["id"]}',
         '📄 编译日志与 API 返回已留档, 请在后台「LGTBot 自动部署」页查看',
     ]
+    # 目标名非法时重编也一样过不去 (compile API 的白名单不认中文目录名), 不给这条提示
+    if st != 'invalid':
+        lines.append(_recompile_tip(game))
     if at_dev:
         lines.append(at_dev + ' 请复查编译问题')
     return '\n'.join(lines)
