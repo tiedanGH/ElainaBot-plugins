@@ -129,6 +129,63 @@ def get_record(rid: str) -> dict | None:
     return next((r for r in list_records(_MAX_RECORDS) if r.get('id') == rid), None)
 
 
+def delete_record(rid: str, with_files: bool = True) -> dict:
+    """删除单条记录; ``with_files`` 时连同该记录的留档文件一并删。
+
+    records.jsonl 是只追加的, 删一条要整份重写 —— 先写临时文件再原子替换, 中途
+    出错不会把索引写坏。返回 ``{ok, error, files}``, files 是实际删掉的留档路径。
+
+    注意: 删掉记录会让 ``find_by_sha`` 查不到这条内容, 也就是**同一个包可以重新
+    上传**了 —— 这正是查重被误伤时的人工解法, 不是副作用。
+    """
+    rid = str(rid or '').strip()
+    if not rid:
+        return {'ok': False, 'error': '记录号为空', 'files': []}
+    target = get_record(rid)
+    if target is None:
+        return {'ok': False, 'error': '记录不存在', 'files': []}
+
+    kept = []
+    try:
+        with open(RECORDS_FILE, encoding='utf-8') as f:
+            for line in f:
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    if json.loads(s).get('id') == rid:
+                        continue
+                except json.JSONDecodeError:
+                    pass    # 坏行原样保留, 不在删单条时顺手丢数据
+                kept.append(s)
+        tmp = RECORDS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(kept) + ('\n' if kept else ''))
+        os.replace(tmp, RECORDS_FILE)
+    except OSError as e:
+        return {'ok': False, 'error': f'重写记录索引失败: {e}', 'files': []}
+
+    removed = []
+    if with_files:
+        # 按记录里登记的相对路径删, 而不是自己拼文件名 —— 拼错就会误删别人的留档
+        for rel in (target.get('review_file'), target.get('archive_file')):
+            full = resolve(str(rel or ''))
+            if full and os.path.isfile(full):
+                try:
+                    os.remove(full)
+                    removed.append(rel)
+                except OSError:
+                    pass
+        diag = os.path.join(DIAG_DIR, f'{rid}.json')
+        if os.path.isfile(diag):
+            try:
+                os.remove(diag)
+                removed.append(os.path.relpath(diag, DATA_DIR).replace('\\', '/'))
+            except OSError:
+                pass
+    return {'ok': True, 'error': '', 'files': removed}
+
+
 def clear_records() -> int:
     """清空记录索引 (reviews/archives 里的留档文件保留, 可在文件页单独删)。"""
     n = len(list_records(_MAX_RECORDS))

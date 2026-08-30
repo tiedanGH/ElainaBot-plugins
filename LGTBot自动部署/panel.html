@@ -489,7 +489,10 @@ async function loadRecords(){
     <td>${catText(rec)}</td>
     <td class="mono">${esc(rec.deploy_name||'-')}</td>
     <td class="mono">${esc(String(rec.elapsed??'-'))}s</td>
-    <td><button class="btn btn-sm" onclick="openRecord('${esc(rec.id)}')">查看</button></td>
+    <td style="white-space:nowrap">
+      <button class="btn btn-sm" onclick="openRecord('${esc(rec.id)}')">查看</button>
+      <button class="btn btn-sm btn-soft" onclick="delRecord('${esc(rec.id)}')">删除</button>
+    </td>
   </tr>`).join('');
   $('rec-table').innerHTML=`<div class="tbl-wrap"><table><thead><tr>
     <th>时间</th><th>文件</th><th>目标</th><th>提交者</th><th>结果</th><th>未通过分类 / 原因</th><th>落地名称</th><th>耗时</th><th></th>
@@ -528,8 +531,24 @@ async function openRecord(id){
   $('modal-title').textContent='审核详情 '+id;
   $('modal-body').innerHTML=`<dl class="kv">${kv}</dl>
     <div class="hint" style="margin-bottom:8px">以下为审核服务的完整回复（群内不输出，仅留档于 data/reviews/）</div>
-    <pre class="raw">${esc(r.review_text||'(无留档)')}</pre>`;
+    <pre class="raw">${esc(r.review_text||'(无留档)')}</pre>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn btn-soft" onclick="delRecord('${esc(id)}',true)">删除这条记录</button>
+    </div>`;
   $('modal-mask').classList.add('show');
+}
+/* 删除单条记录。默认连留档一起删；勾掉则只删索引、留档留在 data/ 里。
+   注意：删掉后该内容的 sha256 就查不到了，同一个压缩包可以重新上传 ——
+   这正是查重误伤时的人工解法，弹窗里要讲清楚。 */
+async function delRecord(id,fromModal){
+  if(!confirm('删除记录 '+id+' ？\n\n将一并删除它的审核留档与压缩包留档。\n'
+    +'删除后该内容的查重记录消失，同一个压缩包可以重新上传。'))return;
+  const r=await api('/record/delete','POST',{id});
+  if(!r.success)return toast(r.error||'删除失败');
+  const n=(r.files||[]).length;
+  toast('已删除记录'+(n?`，同时清理 ${n} 个留档文件`:''));
+  if(fromModal)$('modal-mask').classList.remove('show');
+  loadRecords();
 }
 async function clearRecords(){
   if(!confirm('清空审核记录索引？reviews/ archives/ 里的留档文件会保留，可在「数据文件」页单独删除。'))return;

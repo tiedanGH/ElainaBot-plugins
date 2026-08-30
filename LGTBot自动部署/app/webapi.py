@@ -23,6 +23,7 @@ def register_routes():
     register_route('GET', PREFIX + '/models', _get_models)
     register_route('GET', PREFIX + '/records', _get_records)
     register_route('GET', PREFIX + '/record', _get_record)
+    register_route('POST', PREFIX + '/record/delete', _delete_record)
     register_route('POST', PREFIX + '/records/clear', _clear_records)
     register_route('GET', PREFIX + '/perms', _get_perms)
     register_route('POST', PREFIX + '/perms/save', _save_perm)
@@ -115,6 +116,16 @@ async def _get_record(request: web.Request):
         return web.json_response({'success': False, 'error': '记录不存在'})
     return web.json_response({'success': True, 'record': record,
                               'review_text': store.get_review_text(rid)})
+
+
+async def _delete_record(request: web.Request):
+    """删除单条审核记录; ``keep_files=true`` 时只删索引、保留留档文件。"""
+    body = await _json(request)
+    result = store.delete_record(str(body.get('id') or ''),
+                                 with_files=not body.get('keep_files'))
+    if not result['ok']:
+        return web.json_response({'success': False, 'error': result['error']})
+    return web.json_response({'success': True, 'files': result['files']})
 
 
 async def _clear_records(request: web.Request):
