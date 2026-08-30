@@ -99,6 +99,32 @@ def list_records(limit: int = 200) -> list:
     return out
 
 
+def find_by_sha(sha: str, exclude_id: str = '') -> dict | None:
+    """按内容 sha256 找最近一条同内容记录 (重复上传拒收用)。
+
+    只认字节完全一致 —— 改了一个字符 sha 就变, 不会误伤真正的更新。
+    """
+    if not sha:
+        return None
+    return next((r for r in list_records(_MAX_RECORDS)
+                 if r.get('sha256') == sha and r.get('id') != exclude_id), None)
+
+
+def last_game_record(game: str) -> dict | None:
+    """某游戏目录最近一条「已落地」记录 (部署成功, 或事后的重新编译)。
+
+    ``/compile`` 据此判断上次编译成没成 —— 重新编译会另写一条 stage='recompile'
+    的记录, 所以编译成功后再点就会被挡下, 不会变成无限重编按钮。
+    """
+    game = str(game or '').strip()
+    if not game:
+        return None
+    for r in list_records(_MAX_RECORDS):
+        if r.get('stage') in ('deployed', 'recompile')                 and (r.get('folder') or r.get('deploy_name') or '') == game:
+            return r
+    return None
+
+
 def get_record(rid: str) -> dict | None:
     return next((r for r in list_records(_MAX_RECORDS) if r.get('id') == rid), None)
 

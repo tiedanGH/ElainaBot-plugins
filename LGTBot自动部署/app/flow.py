@@ -31,6 +31,7 @@ force 由主人本人发起, 完成后不再 @ 通知部署人员。
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import time
@@ -64,6 +65,8 @@ def usage() -> str:
         '/upload <文件夹名>',
         '-> 强制上传, 跳过内容审核 (仅主人)',
         '/upload force [文件夹名]',
+        '-> 重新编译 (仅上次编译失败时可用, 不需重传文件)',
+        '/compile <文件夹名>',
         '',
         '🔸上传需引用一条群文件消息, 审核通过后自动落地',
         '🔸压缩包: 解压至 lgtbot 下的同名文件夹, 重名文件夹直接替换',
@@ -75,6 +78,7 @@ def usage() -> str:
     lines.append('🔸rule.md 需有原作标注 (改编需注明「改编自 X」)')
     lines.append('🔸新游戏上传成功后目录自动绑定上传者, 此后仅绑定用户可更新该目录')
     lines.append('🔸审核通过后自动请求编译并回报结果')
+    lines.append('🔸内容完全相同的文件会被直接拒收; 只是编译失败请用 /compile 重编')
     return '\n'.join(lines)
 
 
@@ -246,6 +250,7 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str,
         'source': ref.get('source', ''),
         'url': ref.get('url', ''),
         'size': 0,
+        'sha256': '',
         'stage': 'received',
         'verdict': '',
         'categories': [],
@@ -309,6 +314,17 @@ async def _pipeline(event, cfg: dict, ref: dict, record: dict, target: dict, fol
         record.update(stage='download', error=err)
         return await _finish_fail(event, cfg, record, '文件下载失败')
     record['size'] = len(data)
+
+    # 2.5) 内容查重: 字节完全一致的包直接拒收, 不重复占审核额度与编译时间。
+    # 无论上次过没过审都拒 —— 内容一个字节没改, 重传不会得出不同结论。
+    record['sha256'] = hashlib.sha256(data).hexdigest()
+    dup = store.find_by_sha(record['sha256'], rid)
+    if dup:
+        record.update(stage='duplicate',
+                      error=f'与记录 {dup.get("id")} 完全一致 (SHA256 相同), '
+                            f'旧结论「{_record_outcome(dup)}」')
+        return await _finish_fail(event, cfg, record, '重复上传, 已拒收', suffix=_dup_tip(dup))
+
     if cfg.get('keep_archive'):
         record['archive_file'] = store.save_archive(rid, fname, data)
 
@@ -503,7 +519,7 @@ def _fail_text(record: dict, cfg: dict, title: str, suffix: str = '',
     lines += extra or []
     lines.append(f'🆔 记录: {record["id"]}')
     if suffix:
-        lines.append(f'💡 {suffix}')
+        lines.append(f'> 💡 {suffix}')
     at = _mentions(cfg, record)
     if at:
         lines.append(at + (' 请知悉' if suffix else ' 请人工处理'))
@@ -680,6 +696,15 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
         lines.append('🔧 已请求编译, 编译可能较慢, 请耐心等待结果…')
     await _send(event, '\n'.join(lines))
 
+    await _compile_and_report(event, cfg, record, game)
+
+
+async def _compile_and_report(event, cfg: dict, record: dict, game: str) -> dict:
+    """请求编译 → 新游戏成功则请求计划重启 → 写留档与记录 → 回报结果。
+
+    上传部署与 ``/compile`` 重新编译共用同一段 —— 两条路径的编译语义本就一致,
+    分开写迟早走岔 (比如只在一边请求计划重启)。
+    """
     # ---- 请求编译: 新游戏带 new=true 走完整编译, 老游戏更新走增量 ----
     result = await compilemod.request_compile(game, cfg, is_new=bool(record.get('is_new')))
     record['compile'] = {k: result.get(k) for k in _COMPILE_RECORD_KEYS}
@@ -699,6 +724,7 @@ async def _finish_deploy(event, cfg: dict, record: dict, data: bytes, staging: s
     # 重试 3 次、间隔 60s, 再加最长 compile_timeout 的编译) 很容易超过被动消息 ID
     # 的 5 分钟有效期, 用被动只会把结论静默丢掉 —— 不差这一条主动额度。
     await _send(event, _compile_text(cfg, record, result, game, restart), active=True)
+    return result
 
 
 # 群消息里遮蔽 IP:端口 —— 编译 API 地址默认指向本机, 网络异常的报错会把它带出来
@@ -715,6 +741,164 @@ def _compile_reason(result: dict) -> str:
     """
     text = _ADDR_RE.sub('(已隐藏)', str(result.get('error') or ''))
     return review._clean_display(text, 200)
+
+
+# ==================== /compile 重新编译 ====================
+
+async def handle_recompile(event, argline: str) -> bool:
+    """``/compile <文件夹名>`` —— 只在上次编译失败时重新编译, 不重传文件。
+
+    存在的理由: 内容完全相同的压缩包会被查重直接拒收 (见 _pipeline 的 sha256
+    去重), 所以「审核通过了但编译失败」这种情况没法靠重传补救。上次编译**已经
+    成功**就不给用 —— 否则它会变成一个无限重编按钮, 白占编译机。
+
+    权限沿用目录绑定那套: 绑定用户或上次的上传者本人才能重编。
+    """
+    cfg = config.all_config(refresh=True)
+    if not cfg.get('enabled') or not config.is_group_allowed(event.group_id):
+        log.info(f'群 {event.group_id} 未启用或不在允许列表, 忽略 /compile')
+        return False
+
+    args = (argline or '').split()
+    if len(args) != 1:
+        await _send(event, '❌ 用法: /compile <文件夹名>\n仅在上次编译失败时可用')
+        return False
+    game = args[0]
+    name_err = deploy.bad_name(game)
+    if name_err:
+        await _send(event, f'❌ {name_err}')
+        return False
+
+    last = store.last_game_record(game)
+    if last is None:
+        await _send(event, f'❌ 目录「{game}」没有上传记录, 请先用 /upload 上传')
+        return False
+
+    uid = event.user_id or ''
+    owner = store.perm_get(game)
+    allowed = {last.get('user_id') or ''} | ({owner.get('user_id')} if owner else set())
+    if uid not in allowed:
+        shown = (owner or {}).get('username') or last.get('username') or '上次的上传者'
+        await _send(event, f'❌ 权限不足: 目录「{game}」由 {shown} 负责, 仅其本人可重新编译')
+        return False
+
+    comp = last.get('compile') or {}
+    if comp.get('ok'):
+        await _send(event, f'❌ 目录「{game}」上次编译已成功 (记录 {last.get("id")}), 无需重试\n'
+                           '如需更新内容请修改后 /upload 重新上传')
+        return False
+    if not cfg.get('compile_enabled', True):
+        await _send(event, '❌ 自动编译未在面板启用')
+        return False
+
+    global _busy
+    if _busy:
+        await _send(event, '⏳ 已有任务正在处理, 请稍后再试')
+        return False
+    _busy = True
+    try:
+        _spawn(_run_recompile(event, cfg, game, last))
+    except Exception:
+        _busy = False
+        raise
+    return True
+
+
+async def _run_recompile(event, cfg: dict, game: str, last: dict):
+    """按上次那条记录的参数重新编译, 另写一条 stage='recompile' 记录。
+
+    另起一条而不是改旧记录: records.jsonl 只追加; 而且新记录会被
+    store.last_game_record 优先取到 —— 编译一旦成功, 这条指令自然就用不了了。
+    """
+    global _busy
+    rid = store.new_record_id()
+    record = {
+        'id': rid,
+        'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'stage': 'recompile',
+        'source_record': last.get('id') or '',
+        'group_id': event.group_id or '',
+        'user_id': event.user_id or '',
+        'username': event.username or '',
+        'filename': last.get('filename') or '',
+        'sha256': last.get('sha256') or '',
+        'target': last.get('target') or 'lgtbot',
+        'target_path': last.get('target_path') or '',
+        'folder': last.get('folder') or '',
+        'deploy_name': last.get('deploy_name') or '',
+        'mode': last.get('mode') or 'archive',
+        'size': last.get('size') or 0,
+        'is_new': bool(last.get('is_new')),
+        'forced': bool(last.get('forced')),
+        'verdict': last.get('verdict') or '',
+        'game_name': last.get('game_name') or '',
+        'game_desc': last.get('game_desc') or '',
+        'compile': {},
+        'restart': {},
+        'error': '',
+        '_started': time.time(),
+    }
+    store.save_review_text(
+        rid,
+        f'重新编译目录「{game}」, 未重新上传文件。\n'
+        f'依据记录: {last.get("id")} ({_record_outcome(last)})',
+        header=(f'# 重新编译 {rid}\n- 时间: {record["time"]}\n'
+                f'- 发起人: {record["username"] or record["user_id"]}\n'
+                f'- 目录: {game}\n- 依据记录: {last.get("id")}'))
+    try:
+        await _send(event, f'🔧 已请求重新编译「{_game_label(record, game)}」'
+                           + ('（新游戏完整编译, 耗时更长）' if record['is_new'] else '')
+                           + ', 请耐心等待结果…')
+        await _compile_and_report(event, cfg, record, game)
+    except asyncio.CancelledError:
+        record.update(error='任务被取消 (插件卸载或重载)')
+        _persist(record)
+        raise
+    except Exception as e:  # noqa: BLE001
+        report_error(PLUGIN, 'LGTBot自动部署', e, context={'record': rid, 'game': game})
+        record.update(error=f'{type(e).__name__}: {e}')
+        _persist(record)
+        await _send(event, _fail_text(record, cfg, '重新编译过程出现异常'), active=True)
+    finally:
+        _busy = False
+
+
+# ==================== 重复上传 / 重新编译 ====================
+
+_STAGE_TEXT = {
+    'received': '未处理完', 'download': '下载失败', 'extract': '解压或校验失败',
+    'integrity': '压缩包不完整', 'review': '审核阶段结束', 'deploy': '部署失败',
+    'deployed': '已部署', 'duplicate': '重复上传被拒', 'recompile': '重新编译',
+    'error': '处理异常', 'cancelled': '任务被取消',
+}
+
+
+def _record_outcome(rec: dict) -> str:
+    """把一条历史记录压成一句人话结论 (重复上传提示 / 重新编译提示用)。"""
+    stage = rec.get('stage') or ''
+    if stage == 'deployed':
+        comp = (rec.get('compile') or {}).get('status')
+        label = compilemod.STATUS_LABELS.get(comp, comp) if comp else ''
+        return '已部署' + (f', {label}' if label else '')
+    if rec.get('manual'):
+        return '审核服务异常, 需人工处理'
+    if rec.get('verdict') == 'reject':
+        return f'审核未通过 ({review.labels(rec.get("categories") or [])})'
+    return _STAGE_TEXT.get(stage, stage or '结果未知')
+
+
+def _dup_tip(dup: dict) -> str:
+    """重复上传的处理建议: 上次编译没成的引导到 /compile, 否则让改内容再传。"""
+    game = _record_game(dup)
+    comp = (dup.get('compile') or {}).get('status')
+    if dup.get('stage') == 'deployed' and comp and comp != 'success' and game:
+        return f'内容没有改动无需重传; 上次编译失败 —— 直接用 /compile {game} 重试'
+    return '内容没有任何改动就不必重传; 请修改后再上传, 或联系管理员人工处理'
+
+
+def _record_game(rec: dict) -> str:
+    """记录对应的游戏目录名 (单文件用 folder, 压缩包用落地目录名)。"""
+    return str(rec.get('folder') or rec.get('deploy_name') or '')
 
 
 def _restart_game_name(record: dict, game: str) -> str:

@@ -307,7 +307,7 @@ const BOOLS=['enabled','keep_replaced_backup','review_enabled','keep_archive','c
 const NUMS=['temperature','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget','compile_timeout'];
 const TEXTS=['upload_dir','review_prompt','compile_url'];
 const LISTS=['allowed_groups','notify_users','required_files'];
-const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',integrity:'包不完整',review:'审核',deploy:'部署失败',deployed:'已上传',error:'异常',cancelled:'已取消'};
+const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',integrity:'包不完整',review:'审核',deploy:'部署失败',deployed:'已上传',duplicate:'重复拒收',recompile:'重新编译',error:'异常',cancelled:'已取消'};
 
 let CFG={},LABELS={},CRIT_LABELS={},RECORDS=[];
 
@@ -522,6 +522,7 @@ async function openRecord(id){
     ['编译结果',compileText(rec.compile)],['计划重启',restartText(rec.restart)],
     ['落地路径',rec.dest||'-'],['旧内容备份',rec.backup||'-'],
     ['压缩包留档',rec.archive_file||'-'],['审核留档',rec.review_file||'-'],
+    ['内容 SHA256',rec.sha256||'-'],['依据记录',rec.source_record||'-'],
     ['错误',rec.error||'无'],
   ].map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
   $('modal-title').textContent='审核详情 '+id;
