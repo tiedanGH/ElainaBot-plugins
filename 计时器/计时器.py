@@ -17,6 +17,7 @@ except ImportError:
 
 from core.plugin.decorators import handler
 from core.message._http import MSG_TYPE_TEXT
+from core.base.config import cfg
 import core.plugin.context as _ctx_mod
 
 
@@ -40,6 +41,14 @@ def _save_config():
 def _is_full_volume_group(event):
     """判断是否位于全量群: 全量群的消息事件类型固定为 GROUP_MESSAGE_CREATE"""
     return event.event_type == 'GROUP_MESSAGE_CREATE'
+
+
+def _is_owner(event):
+    """与框架 core/plugin/_blacklist.py:_is_owner 同源：按 appid 取 owner_ids 比对。"""
+    if not getattr(event, 'user_id', ''):
+        return False
+    bot_cfg = cfg.get_bot_config(str(getattr(event, 'appid', '') or ''))
+    return bool(bot_cfg) and event.user_id in (bot_cfg.get('owner_ids') or [])
 
 
 # ==================== 统一发送辅助 ====================
@@ -171,6 +180,7 @@ def _format_at(tz_id):
     r'^[/#](?:t|时间)(?:\s+(.+))?$',
     name='计时器',
     desc='[部分全量] 倒计时 + 多时区世界时间 (子命令：help)',
+    block=True,
 )
 async def time_main(event, match):
     # 群场景: 仅全量群可触发
@@ -242,9 +252,15 @@ async def time_main(event, match):
         await _reply(event, f"{display}现在的时间为：\n{formatted}\n({tz_name})")
         return
 
-    # ----- 时区 (主人 handler 漏到这里 = 非主人 或 参数缺失) -----
+    # ----- 时区 (漏到这里 = 参数缺失; 带参数的已被 set_tiedan_tz 消费) -----
     if sub in ('时区', 'timezone'):
-        await _reply(event, "[权限不足]\n该指令仅主人可用")
+        if _is_owner(event):
+            await _reply(event,
+                "[参数不足]\n"
+                "用法：/t 时区 <IANA时区ID> [显示名]"
+            )
+        else:
+            await _reply(event, "[权限不足]\n该指令仅主人可用")
         return
 
     # ----- 未知子命令 -----
@@ -259,6 +275,7 @@ async def time_main(event, match):
     desc='[仅全量] 主人指令：修改铁蛋的时区',
     priority=10,
     owner_only=True,
+    block=True,
 )
 async def set_tiedan_tz(event, match):
     if event.is_group and not _is_full_volume_group(event):

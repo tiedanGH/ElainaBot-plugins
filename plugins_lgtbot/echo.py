@@ -39,7 +39,7 @@ def _unescape(s):
 
 @handler(r'^/?echo\s+text(?:\s+(\S.*?))?\s*$', name='echo-text',
          desc='主人指令: 以纯文本回显',
-         owner_only=True, ignore_at_check=True)
+         owner_only=True, ignore_at_check=True, block=True)
 async def cmd_echo_text(event, match):
     # 优先用引用内容; 没引用就用 echo text 后面的参数; 两者都没 → 静默跳过
     content = _extract_quoted_content(event) or match.group(1)
@@ -51,7 +51,7 @@ async def cmd_echo_text(event, match):
 
 @handler(r'^/?echo\s+md(?:\s+(\S.*?))?\s*$', name='echo-md',
          desc='主人指令: 以 markdown 回显',
-         owner_only=True, ignore_at_check=True)
+         owner_only=True, ignore_at_check=True, block=True)
 async def cmd_echo_md(event, match):
     content = _extract_quoted_content(event) or match.group(1)
     if not content:

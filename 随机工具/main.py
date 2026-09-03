@@ -14,7 +14,7 @@ __plugin_meta__ = {
     'name': '随机工具',
     'author': '铁蛋',
     'description': '随机骰子 / 智能算式 / 元素抽取',
-    'version': '1.0.1',
+    'version': '1.0.2',
 }
 
 
@@ -453,7 +453,8 @@ def _cmd_rn(args):
 
 @handler(r'^[/#]rd(?:\s+(.+?))?\s*$',
          name='随机工具',
-         desc='随机骰子/智能算式 (/rd help 查看帮助)',)
+         desc='随机骰子/智能算式 (/rd help 查看帮助)',
+         block=True)
 async def cmd_rd(event, match):
     raw = match.group(1)
     args = raw.split() if raw else []

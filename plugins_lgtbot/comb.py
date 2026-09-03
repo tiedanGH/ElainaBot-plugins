@@ -134,18 +134,18 @@ async def _handle(event, sub, user_input):
 
 
 @handler(r'^/?comb\s+(.+)$', name='拼装毁灭者-seed',
-         desc='[仅全量] 调用 ../comb seed <参数>')
+         desc='[仅全量] 调用 ../comb seed <参数>', block=True)
 async def cmd_comb(event, match):
     await _handle(event, 'seed', match.group(1).strip())
 
 
 @handler(r'^/?card\s+(.+)$', name='拼装毁灭者-card',
-         desc='[仅全量] 调用 ../comb card <参数>')
+         desc='[仅全量] 调用 ../comb card <参数>', block=True)
 async def cmd_card(event, match):
     await _handle(event, 'card', match.group(1).strip())
 
 
 @handler(r'^/?board\s+(.+)$', name='拼装毁灭者-board',
-         desc='[仅全量] 调用 ../comb board <参数>')
+         desc='[仅全量] 调用 ../comb board <参数>', block=True)
 async def cmd_board(event, match):
     await _handle(event, 'board', match.group(1).strip())
