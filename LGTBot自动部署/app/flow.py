@@ -744,13 +744,17 @@ async def _compile_and_report(event, cfg: dict, record: dict, game: str) -> dict
     return result
 
 
-def _recompile_tip(game: str) -> str:
-    """编译没成时的补救提示。
+def _fail_next_step(result: dict, game: str) -> str:
+    """编译没成时的出路 —— 按失败性质二选一, 不把两条路一起摆出来。
 
-    内容相同的包会被查重拒收 (见 _pipeline), 所以必须主动告诉用户有 /compile 这条路,
-    否则他只会去重传、然后撞上「重复上传, 已拒收」。
+    默认路是**改完重传**: 绝大多数编译失败就是代码编不过, 拿 /compile 去重编一份
+    编不过的源码只是白占一轮编译机。只有临时性失败 (编译进程被占用、编译服务未
+    就绪等, 见 compile.is_transient) 才该走 /compile —— 那种情况下源码没问题, 而
+    原样重传又会撞上查重拒收。
     """
-    return f'> 💡 遇到临时问题可直接 /compile {game} 重新编译, 无需重传文件'
+    if compilemod.is_transient(result):
+        return f'> 💡 属于临时问题 (编译进程被占用/服务未就绪)，源码已在服务器上，稍后发 /compile {game} 重试即可，无需重传'
+    return '> 💡 编译器报错，代码本身无法编译，请按错误日志修改源码后重新 /upload 上传'
 
 
 def _compile_reason(result: dict) -> str:
@@ -769,9 +773,13 @@ def _compile_reason(result: dict) -> str:
 async def handle_recompile(event, argline: str) -> bool:
     """``/compile <文件夹名>`` —— 只在上次编译失败时重新编译, 不重传文件。
 
-    存在的理由: 内容完全相同的压缩包会被查重直接拒收 (见 _pipeline 的 sha256
-    去重), 所以「审核通过了但编译失败」这种情况没法靠重传补救。上次编译**已经
-    成功**就不给用 —— 否则它会变成一个无限重编按钮, 白占编译机。
+    存在的理由很窄: 编译进程被占用、编译服务未就绪这类**临时**失败, 源码本身没
+    问题, 而原样重传又会撞上 sha256 查重拒收 —— 只能靠这条重来一次。
+
+    编译失败的常态不是这种: 编译器真跑起来报了错就是代码编不过, 出路是改完重新
+    /upload。所以三种情况一律不给用 —— 上次编译**已成功** (否则成了无限重编按钮,
+    白占编译机)、上次是**编译器报错** (同一份源码结果不会变)、上次是**目录名非法**
+    (得换名字重传)。判据见 compile.is_transient。
 
     权限沿用目录绑定那套: 绑定用户或上次的上传者本人才能重编。
     """
@@ -804,9 +812,22 @@ async def handle_recompile(event, argline: str) -> bool:
         return False
 
     comp = last.get('compile') or {}
+    st = comp.get('status')
     if comp.get('ok'):
         await _send(event, f'❌ 目录「{game}」上次编译已成功 (记录 {last.get("id")}), 无需重试\n'
                            '如需更新内容请修改后 /upload 重新上传')
+        return False
+    # 编译器真跑起来并报错 = 代码本身编不过, 重编同一份源码结果不会变 —— 这条指令
+    # 只给临时性失败用。压根没编过 (当时面板没开自动编译) 的记录不在此列, 照常放行。
+    if st == 'invalid':
+        await _send(event, f'❌ 目录名「{game}」不被编译 API 接受 (记录 {last.get("id")}), 重编也一样过不去\n'
+                           '请改用纯英文目录名 (字母/数字/下划线/连字符) 重新 /upload 上传')
+        return False
+    if st == 'failed' and not compilemod.is_transient(comp):
+        await _send(event, f'❌ 目录「{game}」上次是编译器报错 (记录 {last.get("id")}), '
+                           '重编同一份源码只会得到同样的结果\n'
+                           '请按编译日志修改源码后重新 /upload 上传\n'
+                           '> 💡 /compile 只适用于编译进程被占用、编译服务未就绪这类临时失败')
         return False
     if not cfg.get('compile_enabled', True):
         await _send(event, '❌ 自动编译未在面板启用')
@@ -910,11 +931,15 @@ def _record_outcome(rec: dict) -> str:
 
 
 def _dup_tip(dup: dict) -> str:
-    """重复上传的处理建议: 上次编译没成的引导到 /compile, 否则让改内容再传。"""
+    """重复上传的处理建议。
+
+    只有上次是**临时性**编译失败才引导 /compile。上次是代码编不过的话, 原样重传的
+    这一份自然也编不过, 让他去重编只是又白等一轮 —— 那种情况就该老老实实改代码。
+    """
     game = _record_game(dup)
-    comp = (dup.get('compile') or {}).get('status')
-    if dup.get('stage') == 'deployed' and comp and comp != 'success' and game:
-        return f'内容没有改动无需重传; 上次编译失败 —— 直接用 /compile {game} 重试'
+    comp = dup.get('compile') or {}
+    if dup.get('stage') == 'deployed' and game and compilemod.is_transient(comp):
+        return f'内容没有改动无需重传; 上次是临时性编译失败 —— 直接用 /compile {game} 重试'
     return '内容没有任何改动就不必重传; 请修改后再上传, 或联系管理员人工处理'
 
 
@@ -995,7 +1020,7 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str,
         ]
         if link:
             lines.append(link)
-        lines.append(_recompile_tip(game))
+        lines.append(_fail_next_step(result, game))
         if at_dev:
             lines.append(at_dev + ' 请复查编译问题')
         return '\n'.join(lines)
@@ -1014,9 +1039,9 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str,
         # 有报告页就给链接: 上传者要的正是编译器日志, 而后台他进不去
         link or '📄 编译日志与 API 返回已留档, 请在后台「LGTBot 自动部署」页查看',
     ]
-    # 目标名非法时重编也一样过不去 (compile API 的白名单不认中文目录名), 不给这条提示
+    # 目标名非法时改代码和重编都没用, 得换个合规目录名 —— 两条出路都不对症, 不给提示
     if st != 'invalid':
-        lines.append(_recompile_tip(game))
+        lines.append(_fail_next_step(result, game))
     if at_dev:
         lines.append(at_dev + ' 请复查编译问题')
     return '\n'.join(lines)

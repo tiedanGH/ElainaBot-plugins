@@ -221,10 +221,20 @@ def build_compile(record: dict, result: dict, game: str) -> str:
     body = _sec('编译信息', _kv(rows))
     body += _sec('失败原因', _pre(review.mask_addr(result.get('error'))))
     body += _sec('编译日志 (尾部)', _pre(review.mask_addr(result.get('log_tail'))))
-    if st != 'invalid':
+    # 出路按失败性质分岔, 别把两条路一起摆出来 (判据见 compile.is_transient)
+    if compilemod.is_transient(result):
         body += _sec('接下来怎么办', _tip(
-            f'源码已经落地服务器, 修好后<b>无需重传</b>, 在群里发 '
-            f'<code>/compile {_esc(game)}</code> 即可重新编译。'))
+            '这属于<b>临时问题</b>（编译进程被占用、编译服务未就绪等），源码本身没问题、'
+            f'也已经在服务器上，<b>无需重传</b> —— 在群里发 <code>/compile {_esc(game)}</code> '
+            '重试即可。'))
+    elif st == 'invalid':
+        body += _sec('接下来怎么办', _tip(
+            '编译接口只接受纯英文目录名（字母 / 数字 / 下划线 / 连字符，首字符为字母或下划线）。'
+            '重新编译一样过不去，请改用合规的目录名后重新 <code>/upload</code> 上传。'))
+    else:
+        body += _sec('接下来怎么办', _tip(
+            '编译器报错，<b>代码本身无法编译</b>。请按上面的编译日志修改源码，'
+            '再重新 <code>/upload</code> 上传。'))
     return _render(
         title='编译超时' if timeout else '编译失败',
         badge='自动编译', cls='warn' if timeout else '',

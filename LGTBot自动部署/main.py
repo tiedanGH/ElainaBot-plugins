@@ -5,16 +5,20 @@
     /upload <文件夹名>          引用单文件消息 → 写入 <上传目录>/<文件夹名>/<文件名>
     /upload force [文件夹名]    仅主人: 跳过内容审核直传 (force 可简写 f)
     /upload help               查看指令帮助
-    /compile <文件夹名>         重新编译 (仅上次编译失败时可用, 无需重传文件)
+    /compile <文件夹名>         重新编译 (仅上次是临时性编译失败时可用, 无需重传)
 
 内容查重 (app/flow.py): 下载后按 sha256 比对历史记录, 字节完全一致的包**直接拒收**
 且不进审核 —— 内容一个字节没改, 重传不会得出不同结论。提示里给出上次的记录号与
-那次的结果 (无论上次是否过审)。上次只是编译失败时, 提示引导到 /compile。
+那次的结果 (无论上次是否过审)。上次是**临时性**编译失败时才引导到 /compile。
 
-重新编译 (/compile): 因为查重会拦下重传, 「审核过了但编译失败」只能靠这条补救。
-仅当该目录最近一条落地记录的编译**未成功**时可用, 编译已成功则拒绝 (否则会变成
-无限重编按钮)。权限沿用目录绑定: 绑定用户或上次的上传者本人。每次重编另写一条
-stage='recompile' 记录, 编译成功后该指令自然失效。
+重新编译 (/compile): 用途很窄 —— 编译进程被占用、编译服务未就绪这类**临时**失败,
+源码本身没问题而原样重传又会被查重拒收, 只能靠这条重来一次。编译失败的常态不是
+这种: **编译器真跑起来报了错就是代码编不过, 出路是改完重新 /upload**。所以四种情况
+一律不给用: 上次编译已成功 (否则成了无限重编按钮, 白占编译机)、上次是编译器报错
+(同一份源码结果不会变)、上次是目录名非法 (得换名字重传)、面板未启用自动编译。
+判据见 compile.is_transient: 带 returncode 的 API 500 = 代码问题; 409/503/504/
+本地超时/网络异常 = 临时问题。权限沿用目录绑定: 绑定用户或上次的上传者本人。
+每次重编另写一条 stage='recompile' 记录, 编译成功后该指令自然失效。
 
 唯一上传目录 (lgtbot games 目录) 在面板配置; 同名目录 / 同名文件一律直接替换
 (旧内容按配置备份到 data/backups)。
@@ -98,7 +102,7 @@ __plugin_meta__ = {
     'name': 'LGTBot 自动部署',
     'author': '铁蛋',
     'description': '/upload 引用群文件上传到 lgtbot 目录, 自动内容审核 + 请求编译 + 目录权限管理',
-    'version': '1.10.0',
+    'version': '1.10.1',
 }
 
 log = get_logger(PLUGIN, 'LGTBot自动部署')
@@ -131,10 +135,10 @@ async def cmd_upload(event, match):
     await flow.handle(event, (match.group(1) or '').strip())
 
 
-# 重新编译: 内容完全相同的包会被查重拒收, 所以「审核过了但编译失败」只能靠这条补救。
-# 上次编译已成功时 flow 会拒绝, 免得它变成无限重编按钮 (见 flow.handle_recompile)。
+# 重新编译: 只给编译进程被占用这类**临时**失败用 —— 那种情况源码没问题, 而原样重传
+# 会被查重拒收。代码真编不过就该改完重新 /upload, flow 会拒绝 (见 handle_recompile)。
 @handler(r'^/?compile(?:\s+([\s\S]+))?$', name='LGTBot重新编译',
-         desc='/compile <文件夹名> — 重新编译 (仅上次编译失败时可用, 无需重传文件)',
+         desc='/compile <文件夹名> — 重新编译 (仅上次是临时性编译失败时可用, 无需重传)',
          group_only=True, ignore_at_check=True, priority=5)
 async def cmd_recompile(event, match):
     await flow.handle_recompile(event, (match.group(1) or '').strip())

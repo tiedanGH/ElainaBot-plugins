@@ -262,6 +262,27 @@ STATUS_LABELS = {
 }
 
 
+def is_transient(result: dict) -> bool:
+    """这次编译失败是不是「同一份源码过会儿再编就可能过」的临时问题。
+
+    这条判据决定给上传者的出路, 也决定 /compile 放不放行:
+
+    · 编译器真跑起来并报错 (API 500, 带 returncode 与 log_tail) → **代码本身编不过**。
+      同一份源码重编一百次还是同样的错, 唯一的出路是改完重新上传;
+    · 409 已有编译在进行、503 编译服务未就绪、504 服务端超时、本地等待超时、网络
+      异常 → 跟这份源码无关, 过会儿重编就行 —— /compile 存在的意义就是这几种。
+
+    其余 (400 目标名非法、401 token 错等) 两条路都不对症, 一律按非临时处理, 交给被 @ 的开发者。
+    """
+    if not result or result.get('ok'):
+        return False
+    if result.get('returncode') is not None:
+        return False
+    if result.get('status') in ('timeout', 'error'):
+        return True
+    return int(result.get('http_status') or 0) in (409, 503, 504)
+
+
 def describe(result: dict) -> str:
     """留档用的编译结果解析 (含 API 原始返回)。"""
     if not result:
