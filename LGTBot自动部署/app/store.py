@@ -8,7 +8,8 @@
     ├── staging/<记录号>/        解压暂存 (部署或失败后清理)
     ├── backups/<名称>.<时间戳>[/…]  替换时备份的旧目录/旧文件 (面板按整夹展示与删除)
     ├── backups/<文件夹>/<文件>.<时间戳>  单文件替换的备份
-    └── diagnostics/<记录号>.json  未能定位到文件时的原始消息载荷
+    ├── diagnostics/<记录号>.json  未能定位到文件时的原始消息载荷
+    └── reports/<记录号>-<随机串>.html  审核未通过/编译失败的报告页 (见 report.py)
 """
 
 from __future__ import annotations
@@ -28,13 +29,16 @@ ARCHIVES_DIR = os.path.join(DATA_DIR, 'archives')
 STAGING_DIR = os.path.join(DATA_DIR, 'staging')
 BACKUPS_DIR = os.path.join(DATA_DIR, 'backups')
 DIAG_DIR = os.path.join(DATA_DIR, 'diagnostics')
+# 唯一一个会被 Web 服务器直接对外提供的目录 (站点侧反代), 文件名带随机串防枚举
+REPORTS_DIR = os.path.join(DATA_DIR, 'reports')
 
 _MAX_RECORDS = 1000              # 超过后按时间裁剪 (保留最近的)
 _SAFE_NAME = '-_.'
 
 
 def init():
-    for d in (DATA_DIR, REVIEWS_DIR, ARCHIVES_DIR, STAGING_DIR, BACKUPS_DIR, DIAG_DIR):
+    for d in (DATA_DIR, REVIEWS_DIR, ARCHIVES_DIR, STAGING_DIR, BACKUPS_DIR, DIAG_DIR,
+              REPORTS_DIR):
         os.makedirs(d, exist_ok=True)
 
 
@@ -184,6 +188,9 @@ def delete_record(rid: str, with_files: bool = True) -> dict:
         _drop(resolve(str(target.get('review_file') or ''))
               or os.path.join(REVIEWS_DIR, f'{rid}.md'))
         _drop(os.path.join(DIAG_DIR, f'{rid}.json'))
+        # 报告页文件名带不可推导的随机串, 只能按记录里登记的路径删 —— 漏删就等于
+        # 记录已消失、页面还挂在公网上
+        _drop(resolve(str(target.get('report_file') or '')))
     return {'ok': True, 'error': '', 'files': removed}
 
 

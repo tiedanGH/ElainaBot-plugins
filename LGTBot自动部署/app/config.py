@@ -43,6 +43,8 @@ DEFAULTS = {
     'compile_url': '',           # 编译 API 地址, 留空 = 自动指向本机框架端口
     'compile_key': '',           # 编译 API token (LGTBot 面板「引擎编译」页复制)
     'compile_timeout': 180,      # 等待编译响应的秒数, 超时自动发送取消请求
+    # ---- 失败报告页 (审核未通过 / 编译失败渲染成静态 HTML 落到 data/reports) ----
+    'report_base_url': '',       # 反代到 data/reports 的外部地址前缀, 留空 = 不生成报告
     # ---- 模型选择 (取自中央 AI LLM 模块, 本插件不存地址与密钥) ----
     'provider_id': '',           # 留空 = 按中央的接口优先级自动选
     'model': '',                 # 留空 = 按中央的模型优先级自动选
@@ -72,6 +74,7 @@ _COMMENTS = {
     'compile_url': '编译 API 地址, 留空 = 自动指向本机框架端口',
     'compile_key': '编译 API token (LGTBot 面板「引擎编译」页复制)',
     'compile_timeout': '等待编译响应的秒数, 超时自动取消编译',
+    'report_base_url': '审核未通过/编译失败报告页的外部地址前缀 (由站点反代到本插件 data/reports 目录), 如 https://example.com/lgtbot-report/; 留空 = 不生成报告页',
     'provider_id': '审核使用的接口 id (来自中央 AI LLM 模块), 留空 = 中央自动选择',
     'model': '审核使用的模型 (来自中央 AI LLM 模块), 留空 = 中央自动选择',
     'temperature': '采样温度',

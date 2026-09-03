@@ -33,12 +33,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import re
 import time
 
 from core.base.logger import PLUGIN, get_logger, report_error
 
-from . import archive, config, deploy, quoted, review, store
+from . import archive, config, deploy, quoted, report, review, store
 from . import compile as compilemod
 
 log = get_logger(PLUGIN, 'LGTBot自动部署')
@@ -261,6 +260,8 @@ async def _run(event, cfg: dict, ref: dict, target: dict, folder: str,
         'dest': '',
         'review_file': '',
         'archive_file': '',
+        'report_file': '',
+        'report_url': '',
         'model': '',
         'criteria': [],
         'findings': [],
@@ -579,6 +580,10 @@ def _finding_lines(record: dict) -> list:
 
 
 async def _finish_reject(event, cfg: dict, record: dict, result: dict):
+    # 审核服务异常不出报告: 群消息里的状态码与重试次数已经是全部信息, 页面上没有
+    # 第二样东西可写。报告要在 _persist 之前生成 —— report_file 得跟着记录一起落盘,
+    # 否则删记录时清不掉那个页面。
+    link = '' if result['manual'] else report.generate(cfg, record, 'review', result)
     _persist(record)
     if result['manual']:
         # 审核服务异常 (HTTP 失败/超时/解析失败): 群里只给状态码与重试情况,
@@ -604,7 +609,9 @@ async def _finish_reject(event, cfg: dict, record: dict, result: dict):
             lines += floc
         lines.append('')
         lines.append(f'🆔 记录: {record["id"]}')
-        lines.append('📄 详细说明已留档, 请在后台「LGTBot 自动部署」页查看')
+        # 有报告页就给链接 (上传者自己能看到每条 finding 的完整说明), 否则退回
+        # 「去后台看」—— 上传者进不了后台, 那条只对被 @ 的开发者有意义
+        lines.append(link or '📄 详细说明已留档, 请在后台「LGTBot 自动部署」页查看')
     at = _mentions(cfg, record)
     if at:
         lines.append(at + ' 请人工复核')
@@ -725,11 +732,15 @@ async def _compile_and_report(event, cfg: dict, record: dict, game: str) -> dict
         record['restart'] = {k: restart.get(k) for k in _RESTART_RECORD_KEYS}
         notes.append('## 计划重启请求\n' + compilemod.describe_restart(restart))
     store.append_review_text(record['id'], '\n\n'.join(notes))
+    # 编译没成 → 出报告页: 完整报错与编译日志尾部群消息里塞不下 (日志还掺着源码,
+    # 本来就只进留档), 而要看它的恰恰是进不了后台的上传者。disabled 不是失败, 跳过。
+    link = ('' if result.get('ok') or result.get('status') == 'disabled'
+            else report.generate(cfg, record, 'compile', result, game))
     _persist(record)
     # 编译结果一律走主动消息: 走到这一步的累计耗时 (下载 + 解压 + 审核, 审核还可能
     # 重试 3 次、间隔 60s, 再加最长 compile_timeout 的编译) 很容易超过被动消息 ID
     # 的 5 分钟有效期, 用被动只会把结论静默丢掉 —— 不差这一条主动额度。
-    await _send(event, _compile_text(cfg, record, result, game, restart), active=True)
+    await _send(event, _compile_text(cfg, record, result, game, restart, link), active=True)
     return result
 
 
@@ -742,20 +753,15 @@ def _recompile_tip(game: str) -> str:
     return f'> 💡 遇到临时问题可直接 /compile {game} 重新编译, 无需重传文件'
 
 
-# 群消息里遮蔽 IP:端口 —— 编译 API 地址默认指向本机, 网络异常的报错会把它带出来
-_ADDR_RE = re.compile(r'(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?')
-
-
 def _compile_reason(result: dict) -> str:
     """编译失败原因 (群消息用)。
 
     只取编译 API 的 ``error`` 字段 —— 它是 API 自己的固定文案 (见 build_api.py 的
     ``_err`` 调用), **不含编译器输出**; 编译器输出在单独的 ``log_tail`` 里, 那份掺着
     上传者的源码, 只进留档不进群。这里仍走一遍展示净化: 去控制字符与换行 (防伪造
-    多行消息)、去 ``<>`` (防伪造 @ 全体), 再遮蔽 IP:端口。
+    多行消息)、去 ``<>`` (防伪造 @ 全体), 再遮蔽 IP:端口 (与报告页共用 review.mask_addr)。
     """
-    text = _ADDR_RE.sub('(已隐藏)', str(result.get('error') or ''))
-    return review._clean_display(text, 200)
+    return review._clean_display(review.mask_addr(result.get('error')), 200)
 
 
 # ==================== /compile 重新编译 ====================
@@ -948,7 +954,7 @@ def _restart_lines(cfg: dict, record: dict, restart: dict | None) -> list:
 
 
 def _compile_text(cfg: dict, record: dict, result: dict, game: str,
-                  restart: dict | None = None) -> str:
+                  restart: dict | None = None, link: str = '') -> str:
     """编译结果消息。
 
     @ 规则 (force 一律不 @):
@@ -986,8 +992,10 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str,
             f'⚠️ 编译 {wait} 秒超时无响应, 已自动取消'
             + ('' if term.get('ok') else ' (取消请求未确认, 请到编译面板检查)'),
             f'🆔 记录: {record["id"]}',
-            _recompile_tip(game),
         ]
+        if link:
+            lines.append(link)
+        lines.append(_recompile_tip(game))
         if at_dev:
             lines.append(at_dev + ' 请复查编译问题')
         return '\n'.join(lines)
@@ -1003,7 +1011,8 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str,
         lines.append(f'❗ 原因: {reason}')
     lines += [
         f'🆔 记录: {record["id"]}',
-        '📄 编译日志与 API 返回已留档, 请在后台「LGTBot 自动部署」页查看',
+        # 有报告页就给链接: 上传者要的正是编译器日志, 而后台他进不去
+        link or '📄 编译日志与 API 返回已留档, 请在后台「LGTBot 自动部署」页查看',
     ]
     # 目标名非法时重编也一样过不去 (compile API 的白名单不认中文目录名), 不给这条提示
     if st != 'invalid':

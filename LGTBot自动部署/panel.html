@@ -205,6 +205,19 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
     </div>
 
     <div class="card">
+      <h3>失败报告页 <span class="hint">审核未通过 / 编译失败时生成静态 HTML，群消息里附一条可点击的链接</span></h3>
+      <div class="field">
+        <label>报告外链前缀（留空 = 不生成报告页）</label>
+        <input id="report_base_url" class="mono" placeholder="https://example.com/lgtbot-report/">
+      </div>
+      <div class="hint" style="margin-top:10px">
+        报告页落在插件的 <code>data/reports/</code> 目录，<b>反向代理由站点侧自行配置</b>（把该前缀指向这个目录即可，本插件不处理 HTTP 服务）；插件只做「前缀 + 文件名」的拼接。<br>
+        为什么值得配：每条违规的完整说明与编译器日志尾部群消息里塞不下，而需要看它的上传者进不了后台，现在他自己点开就行。<br>
+        文件名形如 <code>&lt;记录号&gt;-&lt;16位随机串&gt;.html</code>：该目录是<b>无鉴权直接对外</b>的，随机串用来防止按记录号枚举出全部失败报告（页面同时带 <code>noindex</code>）。删除审核记录会连同报告页一并删除。
+      </div>
+    </div>
+
+    <div class="card">
       <h3>限额与完整性 <span class="hint">上传者是普通群成员，压缩包按不可信输入处理</span></h3>
       <div class="grid5">
         <div class="field"><label>压缩包上限(MB)</label><input id="max_archive_mb" type="number" min="1" max="2048"></div>
@@ -305,7 +318,7 @@ const API=(baseMatch?baseMatch[1]:'')+'/api/ext/lgtbotdeploy';
 
 const BOOLS=['enabled','keep_replaced_backup','review_enabled','keep_archive','compile_enabled'];
 const NUMS=['temperature','max_archive_mb','max_uncompressed_mb','max_files','download_timeout','text_budget','compile_timeout'];
-const TEXTS=['upload_dir','review_prompt','compile_url'];
+const TEXTS=['upload_dir','review_prompt','compile_url','report_base_url'];
 const LISTS=['allowed_groups','notify_users','required_files'];
 const STAGE_LABEL={received:'已接收',download:'下载失败',extract:'解压失败',integrity:'包不完整',review:'审核',deploy:'部署失败',deployed:'已上传',duplicate:'重复拒收',recompile:'重新编译',error:'异常',cancelled:'已取消'};
 
@@ -470,6 +483,13 @@ function restartText(r){
   if(r.error)parts.push(String(r.error).slice(0,120));
   return parts.join(' · ');
 }
+// 失败报告页那一行要可点，只能绕开统一的 esc() 输出；因此先卡死协议，
+// 再对 URL 本身转义（它拼自面板填的前缀，不是上传物，但没理由留个口子）
+function reportRow(rec){
+  const u=String(rec.report_url||'');
+  if(!/^https?:\/\//i.test(u))return '';
+  return `<dt>失败报告页</dt><dd><a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a></dd>`;
+}
 async function loadRecords(){
   const r=await api('/records');
   if(!r.success)return toast('读取记录失败');
@@ -527,7 +547,7 @@ async function openRecord(id){
     ['压缩包留档',rec.archive_file||'-'],['审核留档',rec.review_file||'-'],
     ['内容 SHA256',rec.sha256||'-'],['依据记录',rec.source_record||'-'],
     ['错误',rec.error||'无'],
-  ].map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+  ].map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')+reportRow(rec);
   $('modal-title').textContent='审核详情 '+id;
   $('modal-body').innerHTML=`<dl class="kv">${kv}</dl>
     <div class="hint" style="margin-bottom:8px">以下为审核服务的完整回复（群内不输出，仅留档于 data/reviews/）</div>
