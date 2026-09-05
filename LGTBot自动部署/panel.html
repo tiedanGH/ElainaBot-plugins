@@ -181,6 +181,7 @@ pre.raw{background:var(--card2);border:1px solid var(--border);border-radius:12p
         <div class="field" style="flex:2">
           <label>编译 API 地址（留空 = 自动指向本机框架端口）</label>
           <input id="compile_url" class="mono" placeholder="http://127.0.0.1:5200">
+          <div class="hint">要填<b>完整 URL</b>（带 <code>http://</code> 或 <code>https://</code> 和主机名），只填主机名或名称会在发请求时报 <code>InvalidUrlClientError</code>。不确定就留空。</div>
         </div>
         <div class="field" style="flex:2">
           <label>编译密钥 compile_key <span class="hint" id="compile-key-state"></span></label>
@@ -444,7 +445,7 @@ function catText(rec){
   if(!cats.length)return rec.error?esc(String(rec.error).slice(0,60)):'-';
   return cats.map(c=>esc(LABELS[c]||c)).join('、');
 }
-const COMPILE_LABEL={success:'编译✓',failed:'编译✗',timeout:'编译超时',error:'编译异常',invalid:'目标名非法',disabled:'未启用编译'};
+const COMPILE_LABEL={success:'编译✓',failed:'编译✗',timeout:'编译超时',error:'编译异常',invalid:'目标名非法',misconfig:'接口配置有误',disabled:'未启用编译'};
 function compilePill(rec){
   const c=rec.compile||{},st=c.status;
   if(!st)return '';

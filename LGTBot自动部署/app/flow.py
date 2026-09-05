@@ -1039,8 +1039,9 @@ def _compile_text(cfg: dict, record: dict, result: dict, game: str,
         # 有报告页就给链接: 上传者要的正是编译器日志, 而后台他进不去
         link or '📄 编译日志与 API 返回已留档, 请在后台「LGTBot 自动部署」页查看',
     ]
-    # 目标名非法时改代码和重编都没用, 得换个合规目录名 —— 两条出路都不对症, 不给提示
-    if st != 'invalid':
+    # 这两种上传者做什么都没用 —— 目标名非法要换合规目录名, 接口配置错了得管理员
+    # 去面板改; 给「改代码重传」或「稍后重编」都是把人往沟里带, 交给被 @ 的开发者
+    if st not in ('invalid', 'misconfig'):
         lines.append(_fail_next_step(result, game))
     if at_dev:
         lines.append(at_dev + ' 请复查编译问题')

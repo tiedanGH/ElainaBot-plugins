@@ -32,12 +32,13 @@
 本客户端按配置 ``compile_timeout`` (默认 180s) 等待; 超时即调 terminate 取消
 编译, 返回 status='timeout'。所有结果归一为:
 
-    {'status': 'success'|'failed'|'timeout'|'error'|'invalid'|'disabled',
+    {'status': 'success'|'failed'|'timeout'|'error'|'invalid'|'misconfig'|'disabled',
      'ok': bool, 'new': bool, 'error': str, 'http_status': int,
      'elapsed_sec': float|None, 'active_matches': int|None,
      'returncode': int|None, 'log_tail': str, 'terminate': dict|None, 'raw': str}
 
 status 含义: success=编译成功; failed=API 明确返回失败(含 4xx/5xx);
+misconfig=面板填的编译 API 地址不是完整 URL (发请求前就拦下);
 timeout=等待超时已发取消; error=网络/未知异常; invalid=目标名不符合 API 白名单
 (含中文等, 不发请求); disabled=面板未启用自动编译。new 回显本次是否按新游戏
 完整编译。
@@ -49,6 +50,7 @@ import asyncio
 import json
 import re
 import time
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -79,6 +81,28 @@ def base_url(cfg: dict) -> str:
     return f'http://127.0.0.1:{port}'
 
 
+def url_error(cfg: dict) -> str:
+    """校验面板填的编译 API 地址, 没问题返回空串。
+
+    非做不可的理由: aiohttp 拿到缺 scheme / 缺主机的地址会直接抛
+    ``InvalidUrlClientError``, 而那个异常被兜底 catch 成 status='error' ——
+    error 本意是「网络抖动」, 归类为**临时问题**, 于是提示用户「稍后 /compile
+    重试」并一直放行重编。可地址填错了重试一万次也还是错的。所以在发请求前就
+    拦下来, 单独归一个 misconfig 状态: 不是临时问题, 也不是上传者的代码问题。
+    """
+    url = str((cfg or {}).get('compile_url') or '').strip()
+    if not url:
+        return ''                       # 留空 = 自动指向本机框架端口, 合法
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in ('http', 'https') or not parts.netloc:
+        # 举例写 localhost 而不是 127.0.0.1: 这段会经 review.mask_addr 遮蔽 IP:端口
+        # 再进群消息与报告页, 写成 IP 会被抹成「(已隐藏)」, 这条建议就白给了。
+        # 「」也去掉 —— _clean_display 会把它们剥掉 (那对符号在群消息里另有用途)
+        return (f'编译 API 地址 {url[:80]} 不是完整的 URL '
+                '(需要 http:// 或 https:// 加主机名)。请在面板的编译接口设置里改成完整地址')
+    return ''
+
+
 def _headers(cfg: dict) -> dict:
     return {'Authorization': f'Bearer {str(cfg.get("compile_key") or "").strip()}',
             'Content-Type': 'application/json'}
@@ -94,6 +118,9 @@ def _result(status: str, **kw) -> dict:
 
 async def terminate(cfg: dict) -> dict:
     """取消当前编译。返回 {'ok', 'message'} (409「没有编译在进行」也算成功收尾)。"""
+    cfg_err = url_error(cfg)
+    if cfg_err:
+        return {'ok': False, 'status': 0, 'message': cfg_err}
     url = base_url(cfg) + _TERMINATE_PATH
     timeout = aiohttp.ClientTimeout(total=_TERMINATE_TIMEOUT)
     try:
@@ -121,6 +148,9 @@ async def request_compile(game: str, cfg: dict, is_new: bool = False) -> dict:
     is_new = bool(is_new)
     if not cfg.get('compile_enabled', True):
         return _result('disabled', new=is_new, error='自动编译未启用')
+    cfg_err = url_error(cfg)
+    if cfg_err:
+        return _result('misconfig', new=is_new, error=cfg_err)
     if not _TARGET_RE.match(game or ''):
         return _result('invalid', new=is_new,
                        error=f'目标名「{game}」不符合编译 API 命名规则 '
@@ -186,6 +216,9 @@ async def request_planned_restart(cfg: dict, reason: str, auto: bool = True) -> 
     message, raw}``; status: success=维护模式已开启 / failed=API 明确拒绝或未生效 /
     error=网络或未知异常。
     """
+    cfg_err = url_error(cfg)
+    if cfg_err:
+        return _restart_result('failed', error=cfg_err)
     url = base_url(cfg) + _PLANNED_RESTART_PATH
     payload = {'enable': True, 'auto': bool(auto), 'reason': str(reason or '')[:_REASON_MAX]}
     try:
@@ -257,6 +290,7 @@ STATUS_LABELS = {
     'timeout': '编译超时',
     'error': '编译异常',
     'invalid': '目标名非法',
+    'misconfig': '编译接口配置有误',
     'disabled': '未启用编译',
     'skipped': '未编译',
 }
@@ -272,7 +306,9 @@ def is_transient(result: dict) -> bool:
     · 409 已有编译在进行、503 编译服务未就绪、504 服务端超时、本地等待超时、网络
       异常 → 跟这份源码无关, 过会儿重编就行 —— /compile 存在的意义就是这几种。
 
-    其余 (400 目标名非法、401 token 错等) 两条路都不对症, 一律按非临时处理, 交给被 @ 的开发者。
+    其余 (400/invalid 目标名非法、401 token 错、misconfig 接口地址填错) 两条路都不对症,
+    一律按非临时处理, 交给被 @ 的开发者。misconfig 尤其不能算临时 —— 地址填错了重试
+    一万次还是错的, 而它原先会以 InvalidUrlClientError 的形态落进 status='error'。
     """
     if not result or result.get('ok'):
         return False
