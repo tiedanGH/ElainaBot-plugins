@@ -29,7 +29,6 @@ import time
 from core.base.logger import PLUGIN, get_logger
 
 from . import review, store
-from .config import DATA_DIR
 
 log = get_logger(PLUGIN, 'LGTBot自动部署')
 
@@ -284,6 +283,6 @@ def generate(cfg: dict, record: dict, kind: str, result: dict | None = None,
         # (比如目录权限不对), 只看群消息永远发现不了
         log.warning(f'生成失败报告页失败 ({record.get("id")}): {type(e).__name__}: {e}')
         return ''
-    record['report_file'] = os.path.relpath(path, DATA_DIR).replace('\\', '/')
+    record['report_file'] = os.path.relpath(path, store.DATA_DIR).replace('\\', '/')
     record['report_url'] = base.rstrip('/') + '/' + name
     return f'[{LINK_TEXT}]({record["report_url"]})'
